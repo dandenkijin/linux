@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: GPL-2.0
+// Kconfig parser for the Tauri-based kernel configuration tool
+
+use std::collections::HashMap;
+use std::fs;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KconfigOption {
+    pub name: String,
+    pub prompt: String,
+    pub r#type: String,
+    pub default: Option<String>,
+    pub depends: Vec<String>,
+    pub help: String,
+    pub value: String,
+}
+
+#[derive(Debug)]
+pub struct KconfigParser {
+    options: HashMap<String, KconfigOption>,
+}
+
+impl KconfigParser {
+    pub fn new() -> Self {
+        KconfigParser {
+            options: HashMap::new(),
+        }
+    }
+
+    pub fn parse_file(&mut self, path: &str) -> Result<(), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read Kconfig file {}: {}", path, e))?;
+
+        self.parse_content(&content)
+    }
+
+    fn parse_content(&mut self, content: &str) -> Result<(), String> {
+        // This is a simplified parser that demonstrates the approach
+        // A full implementation would need to handle all Kconfig syntax
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i].trim();
+
+            if line.starts_with("config ") {
+                if let Some(option) = self.parse_config_block(&lines[i..]) {
+                    i += option.lines_parsed;
+                    self.options.insert(option.data.name.clone(), option.data);
+                    continue;
+                }
+            }
+
+            i += 1;
+        }
+
+        Ok(())
+    }
+
+    fn parse_config_block(&self, lines: &[&str]) -> Option<ParsedConfig> {
+        if lines.is_empty() || !lines[0].starts_with("config ") {
+            return None;
+        }
+
+        let config_line = lines[0];
+        let name = config_line[7..].trim().to_string(); // Skip "config "
+
+        let mut option = KconfigOption {
+            name: name.clone(),
+            prompt: String::new(),
+            r#type: String::new(),
+            default: None,
+            depends: Vec::new(),
+            help: String::new(),
+            value: "n".to_string(), // Default value
+        };
+
+        let mut lines_parsed = 1;
+
+        // Parse the config block
+        for (i, line) in lines[1..].iter().enumerate() {
+            let line = line.trim();
+
+            // End of config block
+            if line.is_empty()
+                || line.starts_with("config ")
+                || line.starts_with("menu ")
+                || line.starts_with("end")
+            {
+                lines_parsed = i + 1;
+                break;
+            }
+
+            if line.starts_with("bool") || line.starts_with("tristate") {
+                option.r#type = line.split_whitespace().next().unwrap_or("").to_string();
+                if let Some(prompt) = line.find('"').and_then(|start| {
+                    line[start + 1..]
+                        .find('"')
+                        .map(|end| line[start + 1..start + 1 + end].to_string())
+                }) {
+                    option.prompt = prompt;
+                }
+            } else if line.starts_with("string")
+                || line.starts_with("hex")
+                || line.starts_with("int")
+            {
+                option.r#type = line.split_whitespace().next().unwrap_or("").to_string();
+                if let Some(prompt) = line.find('"').and_then(|start| {
+                    line[start + 1..]
+                        .find('"')
+                        .map(|end| line[start + 1..start + 1 + end].to_string())
+                }) {
+                    option.prompt = prompt;
+                }
+            } else if line.starts_with("prompt ") {
+                if let Some(prompt) = line.find('"').and_then(|start| {
+                    line[start + 1..]
+                        .find('"')
+                        .map(|end| line[start + 1..start + 1 + end].to_string())
+                }) {
+                    option.prompt = prompt;
+                }
+            } else if line.starts_with("default ") {
+                option.default = Some(line[8..].trim().to_string());
+            } else if line.starts_with("depends on ") {
+                let deps_str = line[11..].trim();
+                // Simple dependency parsing (would need to be more sophisticated)
+                option.depends = deps_str.split("&&").map(|s| s.trim().to_string()).collect();
+            } else if line == "help" {
+                let mut help_lines = Vec::new();
+                let mut j = i + 2; // Start after the "help" line
+
+                while j < lines.len() && lines[j].starts_with("\t") {
+                    help_lines.push(lines[j][1..].to_string()); // Remove leading tab
+                    j += 1;
+                }
+
+                option.help = help_lines.join("\n");
+                lines_parsed = j;
+                break;
+            }
+
+            lines_parsed = i + 2;
+        }
+
+        // If no prompt was set, use the config name
+        if option.prompt.is_empty() {
+            option.prompt = name.clone();
+        }
+
+        Some(ParsedConfig {
+            data: option,
+            lines_parsed,
+        })
+    }
+
+    pub fn get_options(&self) -> Vec<KconfigOption> {
+        self.options.values().cloned().collect()
+    }
+
+    pub fn get_option(&self, name: &str) -> Option<KconfigOption> {
+        self.options.get(name).cloned()
+    }
+
+    pub fn set_option_value(&mut self, name: &str, value: &str) -> bool {
+        if let Some(option) = self.options.get_mut(name) {
+            option.value = value.to_string();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+struct ParsedConfig {
+    data: KconfigOption,
+    lines_parsed: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_config_parsing() {
+        let mut parser = KconfigParser::new();
+        let content = r#"config CONFIG_EXPERT
+    bool "Configure for advanced users"
+    default n
+    help
+      This option allows to adjust settings for advanced users."#;
+
+        assert!(parser.parse_content(content).is_ok());
+        let options = parser.get_options();
+        assert_eq!(options.len(), 1);
+
+        let option = &options[0];
+        assert_eq!(option.name, "CONFIG_EXPERT");
+        assert_eq!(option.prompt, "Configure for advanced users");
+        assert_eq!(option.r#type, "bool");
+        assert_eq!(option.default, Some("n".to_string()));
+        assert!(option.help.contains("advanced users"));
+    }
+}

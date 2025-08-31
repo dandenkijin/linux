@@ -1,0 +1,38 @@
+{
+    "build": {
+        "distDir": "./dist",
+        "devPath": "http://localhost:5173",
+        "beforeDevCommand": "npm run dev",
+        "beforeBuildCommand": "npm run build"
+    },
+    "package": {
+        "productName": "wconf",
+        "version": "0.1.0"
+    },
+    "tauri": {
+        "allowlist": {
+            "all": false,
+            "shell": {
+                "all": false,
+                "open": true
+            }
+        },
+        "windows": [
+            {
+                "title": "Kernel Configuration",
+                "width": 1200,
+                "height": 800,
+                "resizable": true,
+                "fullscreen": false
+            }
+        ],
+        "security": {
+            "csp": null
+        },
+        "bundle": {
+            "active": true,
+            "targets": "all",
+            "identifier": "org.kernel.wconf"
+        }
+    }
+}
