@@ -1,0 +1,77 @@
+# Test Kconfig file with various features
+
+config TEST_BOOL
+    bool "Test Boolean Option"
+    default y
+    depends on ANOTHER_OPTION
+    help
+      This is a test boolean option.
+
+config TEST_TRISTATE
+    tristate "Test Tristate Option"
+    default m
+    help
+      This is a test tristate option.
+
+config TEST_STRING
+    string "Test String Option"
+    default "default_value"
+    help
+      This is a test string option.
+
+config TEST_INT
+    int "Test Integer Option"
+    default 42
+    range 0 100
+    help
+      This is a test integer option.
+
+config TEST_HEX
+    hex "Test Hex Option"
+    default 0x1234
+    help
+      This is a test hex option.
+
+menu "Test Menu 1"
+    config MENU_OPTION_1
+        bool "Menu Option 1"
+        default y
+    help
+      This is the first test menu.
+
+    menu "Submenu 1"
+        config SUBMENU_OPTION
+            bool "Submenu Option"
+            default n
+        help
+          This is a submenu option.
+    endmenu
+
+    if ANOTHER_OPTION
+        config IF_OPTION
+            bool "If Option"
+            default y
+        help
+          This option depends on ANOTHER_OPTION.
+    endif
+endmenu
+
+choice TEST_CHOICE
+    prompt "Test Choice"
+    default TEST_CHOICE_OPTION_1
+
+    config TEST_CHOICE_OPTION_1
+        bool "Choice Option 1"
+    
+    config TEST_CHOICE_OPTION_2
+        bool "Choice Option 2"
+    
+    config TEST_CHOICE_OPTION_3
+        bool "Choice Option 3"
+endchoice
+
+config ANOTHER_OPTION
+    bool "Another Option"
+    default n
+
+comment "This is a test comment"

@@ -1,0 +1,5 @@
+config TEST
+    bool "Test Option"
+    default y
+    help
+      This is a test.

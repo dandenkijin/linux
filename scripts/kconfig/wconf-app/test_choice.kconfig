@@ -1,0 +1,16 @@
+config TEST_BOOL
+    bool "Test Boolean Option"
+    default y
+    help
+      This is a test boolean option.
+
+choice TEST_CHOICE
+    prompt "Test Choice"
+    default TEST_CHOICE_OPTION_1
+
+    config TEST_CHOICE_OPTION_1
+        bool "Choice Option 1"
+    
+    config TEST_CHOICE_OPTION_2
+        bool "Choice Option 2"
+endchoice

@@ -1,0 +1,9 @@
+config TEST_OPTION
+    bool "Test Option"
+    default y
+    help
+      This is a test option to verify the parser works.
+
+config ANOTHER_OPTION
+    tristate "Another Option"
+    depends on TEST_OPTION

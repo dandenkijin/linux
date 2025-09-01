@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+
+choice
+    prompt "boolean choice"
+    default BOOL_CHOICE1
+
+config BOOL_CHOICE0
+    bool "choice 0"
+
+config BOOL_CHOICE1
+    bool "choice 1"
+
+config BOOL_CHOICE2
+    bool "choice 2"
+
+endchoice
+
+config TEST_BOOL
+    bool "Test Boolean Option"
+    default y
+    help
+      This is a test boolean option.

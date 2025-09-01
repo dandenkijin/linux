@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: GPL-2.0
+// Nom-based Kconfig parser for Tauri-based kernel configuration
+
+use nom::{
+    branch::alt,
+    bytes::complete::{tag, take_until, take_while, take_while1},
+    character::complete::{char, multispace0, space0, space1},
+    combinator::{map, opt},
+    sequence::{delimited, preceded, terminated, tuple},
+    IResult,
+};
+use std::collections::HashMap;
+use std::fs;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum KconfigNode {
+    Config(KconfigOption),
+    Menu(KconfigMenu),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KconfigOption {
+    pub name: String,
+    pub prompt: String,
+    pub r#type: String,
+    pub default: Option<String>,
+    pub depends: Option<DependencyExpr>,
+    pub help: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum DependencyExpr {
+    Variable(String),
+    And(Box<DependencyExpr>, Box<DependencyExpr>),
+    Or(Box<DependencyExpr>, Box<DependencyExpr>),
+    Not(Box<DependencyExpr>),
+    Group(Box<DependencyExpr>),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KconfigMenu {
+    pub title: String,
+    pub prompt: String,
+    pub help: String,
+    pub children: Vec<KconfigNode>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KconfigTree {
+    pub nodes: Vec<KconfigNode>,
+}
+
+pub struct KconfigParser {
+    tree: KconfigTree,
+    options: HashMap<String, KconfigOption>,
+}
+
+impl KconfigParser {
+    pub fn new() -> Self {
+        KconfigParser {
+            tree: KconfigTree { nodes: Vec::new() },
+            options: HashMap::new(),
+        }
+    }
+
+    pub fn parse_file(&mut self, path: &str) -> Result<(), String> {
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read Kconfig file: {}", e))?;
+        let tree = Self::parse(&content)?;
+
+        // Populate options map
+        self.options.clear();
+        self.populate_options(&tree.nodes);
+        self.tree = tree;
+
+        Ok(())
+    }
+
+    fn populate_options(&mut self, nodes: &[KconfigNode]) {
+        for node in nodes {
+            match node {
+                KconfigNode::Config(option) => {
+                    self.options.insert(option.name.clone(), option.clone());
+                }
+                KconfigNode::Menu(menu) => {
+                    self.populate_options(&menu.children);
+                }
+            }
+        }
+    }
+
+    pub fn get_tree(&self) -> Vec<KconfigNode> {
+        self.tree.nodes.clone()
+    }
+
+    pub fn get_option(&self, name: &str) -> Option<KconfigOption> {
+        self.options.get(name).cloned()
+    }
+
+    pub fn set_option_value(&mut self, name: &str, value: &str) -> bool {
+        if let Some(option) = self.options.get_mut(name) {
+            option.value = value.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn parse(content: &str) -> Result<KconfigTree, String> {
+        let (_, tree) = parse_kconfig(content).map_err(|e| format!("Parse error: {}", e))?;
+        Ok(tree)
+    }
+}
+
+impl Default for KconfigParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn parse_kconfig(input: &str) -> IResult<&str, KconfigTree> {
+    let (input, nodes) = nom::multi::many0(parse_statement)(input)?;
+    Ok((input, KconfigTree { nodes }))
+}
+
+fn parse_statement(input: &str) -> IResult<&str, KconfigNode> {
+    preceded(
+        multispace0,
+        alt((
+            map(parse_config, KconfigNode::Config),
+            map(parse_menu, KconfigNode::Menu),
+        )),
+    )(input)
+}
+
+fn parse_config(input: &str) -> IResult<&str, KconfigOption> {
+    let (input, _) = tag("config")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, name) = take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)?;
+    let (input, _) = space0(input)?;
+
+    let (input, t) = opt(preceded(
+        space1,
+        alt((
+            map(tag("bool"), |_| "bool".to_string()),
+            map(tag("tristate"), |_| "tristate".to_string()),
+        )),
+    ))(input)?;
+
+    let (input, prompt) = opt(preceded(space1, parse_quoted_string))(input)?;
+
+    // Parse other properties
+    todo!("Complete config parsing")
+}
+
+fn parse_menu(input: &str) -> IResult<&str, KconfigMenu> {
+    let (input, _) = tag("menu")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, title) = parse_quoted_string(input)?;
+    let (input, _) = space0(input)?;
+
+    let (input, help) = opt(preceded(multispace0, parse_help))(input)?;
+
+    let (input, children) = opt(preceded(multispace0, parse_menu_content))(input)?;
+
+    let (input, _) = terminated(tag("endmenu"), multispace0)(input)?;
+
+    Ok((
+        input,
+        KconfigMenu {
+            title: title.clone(),
+            prompt: title,
+            help: help.unwrap_or_default(),
+            children: children.unwrap_or_default(),
+        },
+    ))
+}
+
+fn parse_quoted_string(input: &str) -> IResult<&str, String> {
+    let (input, _) = char('"')(input)?;
+    let (input, content) = take_until("\"")(input)?;
+    let (input, _) = char('"')(input)?;
+    Ok((input, content.to_string()))
+}
+
+fn parse_help(input: &str) -> IResult<&str, String> {
+    let (input, _) = tag("help")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, help_lines) =
+        nom::multi::many1(preceded(space0, take_while(|c: char| !c.is_control())))(input)?;
+    Ok((input, help_lines.join("\n")))
+}
+
+fn parse_menu_content(input: &str) -> IResult<&str, Vec<KconfigNode>> {
+    nom::multi::many0(parse_statement)(input)
+}
+
+// Dependency expression parsing
+fn parse_dependency_expr(input: &str) -> IResult<&str, DependencyExpr> {
+    alt((parse_group, parse_variable, parse_not))(input)
+}
+
+fn parse_variable(input: &str) -> IResult<&str, DependencyExpr> {
+    map(
+        take_while1(|c: char| c.is_alphanumeric() || c == '_'),
+        |s: &str| DependencyExpr::Variable(s.to_string()),
+    )(input)
+}
+
+fn parse_group(input: &str) -> IResult<&str, DependencyExpr> {
+    delimited(tag("("), parse_dependency_expr, tag(")"))(input)
+}
+
+fn parse_not(input: &str) -> IResult<&str, DependencyExpr> {
+    map(preceded(tag("!"), parse_dependency_expr), |expr| {
+        DependencyExpr::Not(Box::new(expr))
+    })(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_config() {
+        let input = r###"
+config TEST
+    bool "Test Option"
+    default y
+help
+  This is a test.
+"###;
+        let tree = KconfigParser::parse(input).unwrap();
+        assert_eq!(tree.nodes.len(), 1);
+        // More assertions
+    }
+}

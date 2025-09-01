@@ -1,0 +1,24 @@
+config TEST_OPTION
+    bool "Test Option"
+    default y
+    help
+      This is a test option to verify the parser works.
+      It has multiple lines of help text.
+
+config ANOTHER_OPTION
+    tristate "Another Option"
+    depends on TEST_OPTION
+
+menu "Test Menu"
+    config MENU_OPTION
+        bool "Menu Option"
+        default n
+        help
+          This option is inside a menu.
+    config SECOND_MENU_OPTION
+        string "Second Menu Option"
+endmenu
+
+config FINAL_OPTION
+    int "Final Option"
+    default 42

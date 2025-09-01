@@ -1,0 +1,3 @@
+[WRAPPER] Executing Rust binary with Kconfig path: Kconfig
+
+** (wconf:22890): WARNING **: 22:03:39.010: webkit_settings_set_enable_offline_web_application_cache is deprecated and does nothing.
