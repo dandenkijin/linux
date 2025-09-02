@@ -1,29 +1,66 @@
-// SPDX-License-Identifier: GPL-2.0
-// A minimal Vite configuration for the Tauri wconf application.
+import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
-import { defineConfig } from "vite";
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// This minimal configuration relies on Vite's defaults, which are generally
-// well-suited for a standard project structure like ours. We only override
-// the absolute necessities for Tauri development.
+// Vite configuration for Tauri
+// https://vitejs.dev/config/
+
 export default defineConfig({
-  // Prevent Vite from clearing the terminal screen, which can hide
-  // important messages from Tauri.
+  // Prevent vite from obscuring Rust errors
   clearScreen: false,
-
-  // The server configuration is critical for Tauri's `devPath` to work correctly.
+  
+  // Tauri expects a fixed port, fail if that port is not available
   server: {
-    // We must have a predictable port for Tauri to connect to.
     port: 5173,
-    // `strictPort` ensures the dev server will fail if the port is already in use,
-    // rather than trying another one. This avoids confusion.
     strictPort: true,
+    open: false, // Don't open browser automatically
+    fs: {
+      // Allow serving files from one level up from the package root
+      allow: ['..', '../../..'],
+    },
   },
-
-  // The build configuration is necessary for `tauri build` to package the app.
+  
+  // Environment variables
+  envPrefix: ['VITE_', 'TAURI_'],
+  
+  // Build configuration
   build: {
-    // This is the directory where `npm run build` will place the final assets.
-    // Tauri reads from here when creating a production build.
-    outDir: "./dist",
+    target: process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
+    sourcemap: !!process.env.TAURI_DEBUG,
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html')
+      },
+      output: {
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]'
+      }
+    }
   },
+  
+  // Public directory for static assets
+  publicDir: 'public',
+  
+  // Resolve aliases
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, './src'),
+      '@tauri-apps/api': '@tauri-apps/api/dist/tauri',
+    },
+  },
+  
+  // Base public path
+  base: '/',
+  
+  // Optimize deps for better performance
+  optimizeDeps: {
+    // Add any dependencies that should be pre-bundled
+    include: ['@tauri-apps/api']
+  }
 });

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Tauri Test</title>
+    <script type="module">
+        import { appWindow } from '@tauri-apps/api/window';
+        
+        async function checkTauri() {
+            try {
+                console.log('Checking Tauri API...');
+                const title = await appWindow.title();
+                document.getElementById('status').textContent = `Tauri is working! Window title: ${title}`;
+                console.log('Tauri API is working!', await appWindow);
+            } catch (error) {
+                document.getElementById('status').textContent = `Tauri error: ${error.message}`;
+                console.error('Tauri API error:', error);
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', checkTauri);
+    </script>
+</head>
+<body>
+    <h1>Tauri Test Page</h1>
+    <div id="status">Loading Tauri API...</div>
+</body>
+</html>

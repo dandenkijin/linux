@@ -310,14 +310,18 @@ mod kconfig_parser {
             }
             content
         }
-    }
-}
+    } // Close the KconfigParser impl
+} // Close the kconfig_parser module
 
 // --- Tauri Application State and Commands ---
 use crate::kconfig_parser::{KconfigNode, KconfigOption, KconfigParser};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use tauri::Manager;
+
+// Global flag to track if we already have a window
+static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 
 struct KconfigState {
     parser: KconfigParser,
@@ -402,13 +406,120 @@ fn save_kconfig(state: tauri::State<'_, Arc<Mutex<KconfigState>>>) -> Result<(),
     Ok(())
 }
 
-fn main() {
-    let kconfig_path = std::env::args()
-        .last()
-        .unwrap_or_else(|| "Kconfig".to_string());
-    let state = Arc::new(Mutex::new(KconfigState::new(kconfig_path)));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Set up logging
+    unsafe {
+        std::env::set_var("RUST_LOG", "debug,wconf=trace,tao=debug,winit=debug,tauri=debug");
+    }
+    
+    env_logger::builder()
+        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
+        .format_module_path(false)
+        .filter_level(log::LevelFilter::Trace)
+        .init();
 
+    log::info!("========================================");
+    log::info!("Starting wconf application...");
+    log::debug!("Current working directory: {:?}", std::env::current_dir()?);
+    log::debug!("Command line args: {:?}", std::env::args().collect::<Vec<_>>());
+    log::debug!("Environment variables (first 10):");
+    for (i, (key, value)) in std::env::vars().take(10).enumerate() {
+        log::debug!("  {}: {}={}", i + 1, key, value);
+    }
+    
+    // Get Kconfig file path from command line or use default
+    let kconfig_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "Kconfig".to_string());
+    
+    log::info!("Using Kconfig path: {}", kconfig_path);
+    
+    // Create application state
+    let state = Arc::new(Mutex::new(KconfigState::new(kconfig_path)));
+    
+    log::debug!("Creating Tauri application builder...");
+    
+    log::info!("Setting up Tauri application...");
+    log::debug!("Tauri version: {}", env!("CARGO_PKG_VERSION"));
+    log::debug!("Tauri features: {:?}", {
+        #[allow(unused_mut)]
+        // List of enabled features for logging
+        let features = vec![
+            "custom-protocol" // Default Tauri feature
+        ];
+        features
+    });
     tauri::Builder::default()
+        .setup(|app| {
+            log::info!("Tauri app setup started");
+            log::debug!("Current working directory: {:?}", std::env::current_dir()?);
+            let path_resolver = app.path();
+            log::debug!("App config dir: {:?}", path_resolver.app_config_dir());
+            log::debug!("App data dir: {:?}", path_resolver.app_data_dir());
+            
+            // Use a fixed window label to prevent multiple windows
+            const WINDOW_LABEL: &str = "main-window";
+            
+            // Check if we already have a window open
+            if WINDOW_OPEN.swap(true, Ordering::SeqCst) {
+                log::warn!("Window already exists, not creating a new one");
+                return Ok(());
+            }
+
+            // Clean up any existing windows to be safe
+            let webview_windows = app.webview_windows();
+            if !webview_windows.is_empty() {
+                log::info!("Found {} existing windows, closing them...", webview_windows.len());
+                for (label, window) in webview_windows {
+                    log::debug!("Closing window: {}", label);
+                    if let Err(e) = window.close() {
+                        log::error!("Failed to close window '{}': {}", label, e);
+                    }
+                }
+                // Give the system time to clean up the windows
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+
+            // Create new main window with error handling
+            log::info!("Creating new main window...");
+            let webview = match tauri::WebviewWindowBuilder::new(
+                app,
+                WINDOW_LABEL,
+                tauri::WebviewUrl::App("index.html".into())
+            )
+            .title("Kernel Configuration")
+            .inner_size(1200.0, 800.0)
+            .resizable(true)
+            .decorations(true)
+            .center()
+            .build() {
+                Ok(webview) => webview,
+                Err(e) => {
+                    log::error!("Failed to create webview: {}", e);
+                    return Err(e.into());
+                }
+            };
+            
+            // Set up window close event
+            let webview_ = webview.clone();
+            webview.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    log::info!("Window close requested, cleaning up...");
+                    // Reset the window open flag
+                    WINDOW_OPEN.store(false, Ordering::SeqCst);
+                    
+                    // Close the window
+                    if let Err(e) = webview_.close() {
+                        log::error!("Failed to close window: {}", e);
+                    }
+                    
+                    // Exit the application
+                    std::process::exit(0);
+                }
+            });
+            log::info!("Tauri app setup completed");
+            Ok(())
+        })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             load_kconfig,
@@ -416,8 +527,15 @@ fn main() {
             set_kconfig_option,
             save_kconfig
         ])
-        .run(tauri::generate_context!("./tauri.conf.json"))
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!())
+        .map_err(|e| {
+            log::error!("Failed to run Tauri application: {}", e);
+            log::error!("Error details: {:?}", e);
+            e
+        })?;
+        
+    log::info!("Tauri application has exited");
+    Ok(())
 }
 
 #[cfg(test)]

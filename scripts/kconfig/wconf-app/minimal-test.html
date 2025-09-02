@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Minimal Tauri Test</title>
+    <script>
+        // Test if running in Tauri
+        async function testTauri() {
+            const status = document.getElementById('status');
+            
+            try {
+                // Check if we're running in Tauri
+                if (window.__TAURI__) {
+                    status.textContent = 'Tauri is available!';
+                    status.style.color = 'green';
+                    
+                    // Try to use Tauri API
+                    try {
+                        const { appWindow } = await import('@tauri-apps/api/window');
+                        const title = await appWindow.title();
+                        document.getElementById('tauri-api').textContent = `Window title: ${title}`;
+                    } catch (e) {
+                        document.getElementById('tauri-api').textContent = `Tauri API error: ${e.message}`;
+                        document.getElementById('tauri-api').style.color = 'red';
+                    }
+                } else {
+                    status.textContent = 'Tauri is NOT available (running in browser)';
+                    status.style.color = 'orange';
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.style.color = 'red';
+            }
+        }
+        
+        // Run test when page loads
+        document.addEventListener('DOMContentLoaded', testTauri);
+    </script>
+</head>
+<body>
+    <h1>Minimal Tauri Test</h1>
+    <div id="status" style="font-size: 1.2em; font-weight: bold;">Checking Tauri environment...</div>
+    <div id="tauri-api" style="margin-top: 1em;"></div>
+    
+    <div style="margin-top: 2em; padding: 1em; background: #f0f0f0; border-radius: 5px;">
+        <h3>Debug Info:</h3>
+        <pre id="debug"></pre>
+    </div>
+    
+    <script>
+        // Add debug info
+        const debugEl = document.getElementById('debug');
+        debugEl.textContent = `
+            User Agent: ${navigator.userAgent}
+            Platform: ${navigator.platform}
+            Language: ${navigator.language}
+            Window: ${typeof window}
+            Document: ${typeof document}
+            Tauri: ${typeof window.__TAURI__}
+            __TAURI__: ${JSON.stringify(window.__TAURI__ || 'undefined')}
+        `;
+    </script>
+</body>
+</html>

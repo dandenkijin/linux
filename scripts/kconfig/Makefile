@@ -241,3 +241,9 @@ $(obj)/%conf-cflags $(obj)/%conf-libs $(obj)/%conf-bin: $(src)/%conf-cfg.sh
 	$(call cmd,conf_cfg)
 
 clean-files += *conf-cflags *conf-libs *conf-bin
+
+# Clean targets
+clean-wconf:
+	rm -f wconf wconf.o wconf-backend.log
+
+clean: clean-wconf

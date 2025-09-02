@@ -8,19 +8,28 @@ description = "A Tauri-based kernel configuration tool"
 authors = ["The Wconf Developers"]
 license = "GPL-2.0-only"
 repository = "https://kernel.org/"
-edition = "2021"
-rust-version = "1.70"
+edition = "2024"
+rust-version = "1.86"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-tauri-build = { version = "1.5.2", features = [] }
+tauri-build = { version = "2.4.1", features = [] }
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
-tauri = { version = "1.8.3", features = ["shell-open"] }
-nom-kconfig = { path = "src/nom_kconfig_vendored" }
+tauri = { version = "2.8.5", features = [
+  "wry",
+  "x11",
+  "tray-icon",
+  "webview-data-url"
+] }
+nom-kconfig = { path = "nom-kconfig", features = ["deserialize", "serialize"] }
+log = "0.4"
+env_logger = "0.10"
+anyhow = "1.0"
+thiserror = "1.0"
 
 [dev-dependencies]
 tempfile = "3.10.1"
@@ -31,3 +40,13 @@ default = ["custom-protocol"]
 # this feature is used for production builds where `devPath` points to the filesystem
 # DO NOT remove this
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# Optimize for speed
+opt-level = 3
+# Enable link-time optimization for better performance (slower build but faster binary)
+lto = true
+# Use a single code generation unit for better optimization (slower build but better optimization)
+codegen-units = 1
+# Panic immediately on error (smaller binary, better performance)
+panic = 'abort'

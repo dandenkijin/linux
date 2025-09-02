@@ -1,9 +1,21 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { appWindow } from "@tauri-apps/api/window";
 
 // --- Global State ---
 let kconfigTree = [];
 let selectedOption = null;
+
+// Initialize Tauri
+async function initializeTauri() {
+  try {
+    // Wait for the Tauri API to be ready
+    await appWindow.show();
+    console.log('Tauri app window is ready');
+  } catch (error) {
+    console.error('Error initializing Tauri:', error);
+  }
+}
 
 // --- Main App Setup ---
 function initializeApp() {
@@ -332,4 +344,10 @@ function filterTree(nodes, searchTerm, typeFilter) {
 }
 
 // --- App Entry Point ---
-document.addEventListener("DOMContentLoaded", initializeApp);
+document.addEventListener("DOMContentLoaded", () => {
+  initializeTauri().then(() => {
+    initializeApp();
+  }).catch(error => {
+    console.error('Failed to initialize app:', error);
+  });
+});
