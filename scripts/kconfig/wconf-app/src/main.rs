@@ -313,12 +313,15 @@ mod kconfig_parser {
     } // Close the KconfigParser impl
 } // Close the kconfig_parser module
 
-// --- Tauri Application State and Commands ---
 use crate::kconfig_parser::{KconfigNode, KconfigOption, KconfigParser};
 use serde::Serialize;
+use tauri_plugin_dialog::DialogExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use tauri::Manager;
+use tauri::{
+    AppHandle, Manager, Runtime, 
+    menu::{Menu, MenuItem, MenuItemBuilder, SubmenuBuilder, MenuBuilder}
+};
 
 // Global flag to track if we already have a window
 static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
@@ -406,6 +409,179 @@ fn save_kconfig(state: tauri::State<'_, Arc<Mutex<KconfigState>>>) -> Result<(),
     Ok(())
 }
 
+fn create_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, Box<dyn std::error::Error>> {
+    // Create file menu items
+    let open = MenuItemBuilder::new("Open")
+        .id("open")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let save = MenuItemBuilder::new("Save")
+        .id("save")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+    let exit = MenuItemBuilder::new("Exit")
+        .id("exit")
+        .accelerator("Cmd+Q")
+        .build(app)?;
+    
+    // Create file menu
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .items(&[
+            &open,
+            &save,
+            &MenuItemBuilder::new("-").id("sep1").build(app)?,
+            &exit,
+        ])
+        .build()?;
+    
+    // Create edit menu items
+    let undo = MenuItemBuilder::new("Undo")
+        .id("undo")
+        .accelerator("CmdOrCtrl+Z")
+        .build(app)?;
+    let redo = MenuItemBuilder::new("Redo")
+        .id("redo")
+        .accelerator("CmdOrCtrl+Shift+Z")
+        .build(app)?;
+    let cut = MenuItemBuilder::new("Cut")
+        .id("cut")
+        .accelerator("CmdOrCtrl+X")
+        .build(app)?;
+    let copy = MenuItemBuilder::new("Copy")
+        .id("copy")
+        .accelerator("CmdOrCtrl+C")
+        .build(app)?;
+    let paste = MenuItemBuilder::new("Paste")
+        .id("paste")
+        .accelerator("CmdOrCtrl+V")
+        .build(app)?;
+    
+    // Create edit menu
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .items(&[
+            &undo,
+            &redo,
+            &MenuItemBuilder::new("-").id("sep1").build(app)?,
+            &cut,
+            &paste,
+        ])
+        .build()?;
+    
+    // Create view menu items
+    let reload = MenuItemBuilder::new("Reload")
+        .id("reload")
+        .accelerator("CmdOrCtrl+R")
+        .build(app)?;
+    let zoomin = MenuItemBuilder::new("Zoom In")
+        .id("zoomin")
+        .accelerator("CmdOrCtrl+Plus")
+        .build(app)?;
+    let zoomout = MenuItemBuilder::new("Zoom Out")
+        .id("zoomout")
+        .accelerator("CmdOrCtrl+Minus")
+        .build(app)?;
+    let reset_zoom = MenuItemBuilder::new("Reset Zoom")
+        .id("resetzoom")
+        .accelerator("CmdOrCtrl+0")
+        .build(app)?;
+    
+    // Create view menu
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .items(&[
+            &reload,
+            &zoomin,
+            &zoomout,
+            &reset_zoom,
+        ])
+        .build()?;
+    
+    // Create help menu items
+    let help = MenuItemBuilder::new("Help")
+        .id("help")
+        .build(app)?;
+    let about = MenuItemBuilder::new("About")
+        .id("about")
+        .build(app)?;
+    
+    // Create help menu
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .items(&[
+            &help,
+            &about,
+        ])
+        .build()?;
+    
+    // Create main menu
+    let menu = MenuBuilder::new(app)
+        .items(&[&file_menu, &edit_menu, &view_menu, &help_menu])
+        .build()?;
+    
+    Ok(menu)
+}
+
+fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
+    let window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => {
+            log::error!("Failed to get main window");
+            return;
+        }
+    };
+    
+    match event.id().as_ref() {
+        "open" => {
+            let app_handle = app.clone();
+            let window = window.clone();
+            let dialog = app.dialog();
+            dialog.file()
+                .add_filter("Kconfig", &["Kconfig"])
+                .pick_file(move |file_path| {
+                    if let Some(path) = file_path {
+                        log::info!("Selected file: {:?}", path);
+                        // TODO: Handle file opening
+                    }
+                });
+        }
+        "save" => {
+            // TODO: Implement save functionality
+            log::info!("Save menu item clicked");
+        }
+        "exit" => {
+            std::process::exit(0);
+        }
+        "reload" => {
+            if let Err(e) = window.eval("window.location.reload();") {
+                log::error!("Failed to reload window: {}", e);
+            }
+        }
+        "zoomin" => {
+            if let Err(e) = window.eval("document.body.style.zoom = (parseFloat(document.body.style.zoom || '1') + 0.1).toString();") {
+                log::error!("Failed to zoom in: {}", e);
+            }
+        }
+        "zoomout" => {
+            if let Err(e) = window.eval("let zoom = parseFloat(document.body.style.zoom || '1'); if (zoom > 0.5) { document.body.style.zoom = (zoom - 0.1).toString(); }") {
+                log::error!("Failed to zoom out: {}", e);
+            }
+        }
+        "resetzoom" => {
+            if let Err(e) = window.eval("document.body.style.zoom = '1';") {
+                log::error!("Failed to reset zoom: {}", e);
+            }
+        }
+        "help" => {
+            if let Err(e) = webbrowser::open("https://www.kernel.org/doc/html/latest/kbuild/kconfig-macro-language.html") {
+                log::error!("Failed to open help URL: {}", e);
+            }
+        }
+        "about" => {
+            // TODO: Show about dialog
+            log::info!("About menu item clicked");
+        }
+        _ => {}
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up logging
     unsafe {
@@ -450,7 +626,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         features
     });
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
+            // Create and set the application menu
+            let menu = create_menu(app.handle())?;
+            app.set_menu(menu)?;
+            
+            // Handle menu events
+            let app_handle = app.handle().clone();
+            app.on_menu_event(move |_app, event| {
+                handle_menu_event(&app_handle, event);
+            });
             log::info!("Tauri app setup started");
             log::debug!("Current working directory: {:?}", std::env::current_dir()?);
             let path_resolver = app.path();
@@ -458,11 +643,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::debug!("App data dir: {:?}", path_resolver.app_data_dir());
             
             // Use a fixed window label to prevent multiple windows
-            const WINDOW_LABEL: &str = "main-window";
+            const WINDOW_LABEL: &str = "main";
             
             // Check if we already have a window open
             if WINDOW_OPEN.swap(true, Ordering::SeqCst) {
                 log::warn!("Window already exists, not creating a new one");
+                // Try to focus the existing window instead
+                if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+                    if let Err(e) = window.set_focus() {
+                        log::error!("Failed to focus existing window: {}", e);
+                    }
+                }
                 return Ok(());
             }
 
@@ -471,52 +662,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !webview_windows.is_empty() {
                 log::info!("Found {} existing windows, closing them...", webview_windows.len());
                 for (label, window) in webview_windows {
-                    log::debug!("Closing window: {}", label);
-                    if let Err(e) = window.close() {
-                        log::error!("Failed to close window '{}': {}", label, e);
+                    if label != WINDOW_LABEL {  // Don't close our main window if it exists
+                        log::debug!("Closing window: {}", label);
+                        if let Err(e) = window.close() {
+                            log::error!("Failed to close window '{}': {}", label, e);
+                        }
                     }
                 }
                 // Give the system time to clean up the windows
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
             // Create new main window with error handling
             log::info!("Creating new main window...");
-            let webview = match tauri::WebviewWindowBuilder::new(
-                app,
-                WINDOW_LABEL,
-                tauri::WebviewUrl::App("index.html".into())
-            )
-            .title("Kernel Configuration")
-            .inner_size(1200.0, 800.0)
-            .resizable(true)
-            .decorations(true)
-            .center()
-            .build() {
-                Ok(webview) => webview,
-                Err(e) => {
-                    log::error!("Failed to create webview: {}", e);
-                    return Err(e.into());
-                }
-            };
             
-            // Set up window close event
-            let webview_ = webview.clone();
-            webview.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    log::info!("Window close requested, cleaning up...");
-                    // Reset the window open flag
-                    WINDOW_OPEN.store(false, Ordering::SeqCst);
-                    
-                    // Close the window
-                    if let Err(e) = webview_.close() {
-                        log::error!("Failed to close window: {}", e);
-                    }
-                    
-                    // Exit the application
-                    std::process::exit(0);
+            // First check if the window already exists
+            if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+                log::info!("Window already exists, bringing it to front");
+                if let Err(e) = window.set_focus() {
+                    log::error!("Failed to focus existing window: {}", e);
                 }
-            });
+            } else {
+                // Only create a new window if one doesn't exist
+                let webview = match tauri::WebviewWindowBuilder::new(
+                    app,
+                    WINDOW_LABEL,
+                    tauri::WebviewUrl::App("index.html".into())
+                )
+                .title("Kernel Configuration")
+                .inner_size(1200.0, 800.0)
+                .resizable(true)
+                .decorations(true)
+                .center()
+                .build() {
+                    Ok(webview) => webview,
+                    Err(e) => {
+                        log::error!("Failed to create webview: {}", e);
+                        WINDOW_OPEN.store(false, Ordering::SeqCst);
+                        return Err(e.into());
+                    }
+                };
+                
+                // Set up window close event
+                let webview_ = webview.clone();
+                webview.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        log::info!("Window close requested, cleaning up...");
+                        // Reset the window open flag
+                        WINDOW_OPEN.store(false, Ordering::SeqCst);
+                        
+                        // Close the window
+                        if let Err(e) = webview_.close() {
+                            log::error!("Failed to close window: {}", e);
+                        }
+                        
+                        // Exit the application
+                        std::process::exit(0);
+                    }
+                });
+            }
             log::info!("Tauri app setup completed");
             Ok(())
         })

@@ -25,6 +25,8 @@ tauri = { version = "2.8.5", features = [
   "tray-icon",
   "webview-data-url"
 ] }
+tauri-plugin-dialog = { version = "2.4.0", features = [] }
+webbrowser = "0.8"
 nom-kconfig = { path = "nom-kconfig", features = ["deserialize", "serialize"] }
 log = "0.4"
 env_logger = "0.10"
