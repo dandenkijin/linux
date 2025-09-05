@@ -13,7 +13,22 @@
         "security": {
             "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; img-src 'self' data:; connect-src 'self' ws: wss: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'"
         },
-        "windows": []
+        "windows": [
+            {
+                "label": "main",
+                "title": "Kernel Configuration",
+                "width": 800,
+                "height": 600,
+                "resizable": true,
+                "fullscreen": false,
+                "decorations": true,
+                "center": true,
+                "skipTaskbar": false,
+                "alwaysOnTop": false,
+                "visible": true,
+                "theme": "Dark"
+            }
+        ]
     },
     "bundle": {
       "active": true,
