@@ -51,10 +51,16 @@ $(1): $(obj)/$($(1)-prog)
 	$(Q)$$< $(silent) $(Kconfig)
 
 PHONY += build_$(1)
-build_$(1): $(obj)/$($(1)-prog)
 endef
 
-$(foreach c, config menuconfig nconfig gconfig xconfig wconfig, $(eval $(call config_rule,$(c))))
+# Define all config targets
+$(foreach c, config menuconfig nconfig gconfig xconfig, $(eval $(call config_rule,$(c))))
+
+# wconfig target with optional debug support
+PHONY += wconfig
+wconfig: HOSTCFLAGS_wconf.o += $(if $(WCONFIG_DEBUG),-DDEVELOPMENT_MODE=1)
+wconfig: $(obj)/wconf
+	$(Q)$< $(silent) $(Kconfig)
 
 PHONY += localmodconfig localyesconfig
 localyesconfig localmodconfig: $(obj)/conf
@@ -79,11 +85,6 @@ localyesconfig localmodconfig: $(obj)/conf
 simple-targets := oldconfig allnoconfig allyesconfig allmodconfig \
 	alldefconfig randconfig listnewconfig olddefconfig syncconfig \
 	helpnewconfig yes2modconfig mod2yesconfig mod2noconfig
-
-PHONY += $(simple-targets)
-
-$(simple-targets): $(obj)/conf
-	$(Q)$< $(silent) --$@ $(Kconfig)
 
 PHONY += savedefconfig defconfig
 
@@ -140,7 +141,7 @@ help:
 	@echo  '                    except those preserved by LMC_KEEP environment variable'
 	@echo  '  localyesconfig  - Update current config converting local mods to core'
 	@echo  '                    except those preserved by LMC_KEEP environment variable'
-	@echo  '  defconfig	  - New config with default from ARCH supplied defconfig'
+	@echo  '  defconfig	  - New config with default from ARCH supplied defconfig'where is asmongold from
 	@echo  '  savedefconfig   - Save current config as ./defconfig (minimal config)'
 	@echo  '  allnoconfig	  - New config where all options are answered with no'
 	@echo  '  allyesconfig	  - New config where all options are accepted with yes'
@@ -229,10 +230,16 @@ HOSTCFLAGS_gconf.o = $(call read-file, $(obj)/gconf-cflags)
 $(obj)/gconf: | $(obj)/gconf-libs
 $(obj)/gconf.o: | $(obj)/gconf-cflags
 
-# wconf: Used for the wconfig target based on Tauri
-# Uses a C wrapper that builds and executes the Rust application
+# wconf: The binary that handles both wconfig and wconfig-dev targets
 hostprogs	+= wconf
 wconf-objs	:= wconf.o
+
+# Common flags for wconf
+HOSTCFLAGS_wconf.o += -DCONFIG_FILE=\"$(objtree)/.config\"
+
+# Development mode flag (for manual development use)
+# To enable development mode, uncomment the following line:
+# HOSTCFLAGS_wconf.o += -DDEVELOPMENT_MODE=1
 
 # check if necessary packages are available, and configure build flags
 cmd_conf_cfg = $< $(addprefix $(obj)/$*conf-, cflags libs bin); touch $(obj)/$*conf-bin
@@ -244,6 +251,6 @@ clean-files += *conf-cflags *conf-libs *conf-bin
 
 # Clean targets
 clean-wconf:
-	rm -f wconf wconf.o wconf-backend.log
+	rm -f wconf wconf-dev wconf.o wconf-backend.log
 
 clean: clean-wconf

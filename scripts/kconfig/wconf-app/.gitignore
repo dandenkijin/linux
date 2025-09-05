@@ -1,6 +1,6 @@
 # Build artifacts
 /target/
-/dist/
+# /dist/  # Allowing dist directory for frontend files
 
 # Node.js dependencies
 /node_modules/

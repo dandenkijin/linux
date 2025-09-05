@@ -51,55 +51,86 @@ int main(int argc, char *argv[]) {
         printf("[WRAPPER] Arg %d: '%s'\n", i, argv[i]);
     }
 
-    // Validate minimum required arguments
-    if (argc < 2) {
+    // Parse command line arguments
+    int development_mode = 0;
+    const char *kconfig_path = NULL;
+    const char *config_path = NULL;
+    
+    // Check if DEVELOPMENT_MODE was defined at compile time
+    #ifdef DEVELOPMENT_MODE
+    development_mode = 1;
+    printf("[WRAPPER] Development mode enabled via compile flag\n");
+    #endif
+    
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dev") == 0) {
+            development_mode = 1;
+            printf("[WRAPPER] Development mode enabled via command line\n");
+        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (argv[i][0] != '-') {
+            kconfig_path = argv[i];
+        }
+    }
+    
+    if (!kconfig_path) {
         fprintf(stderr, "[WRAPPER ERROR] Missing Kconfig path argument\n");
-        fprintf(stderr, "[WRAPPER ERROR] Usage: wconfig [options] <Kconfig_path>\n");
+        fprintf(stderr, "[WRAPPER ERROR] Usage: wconf [--dev] [--config <config_file>] <Kconfig_path>\n");
         return 1;
     }
-
-    // Kconfig path is always the last argument
-    const char *kconfig_path = argv[argc-1];
+    
+    // Default config path if not specified
+    if (!config_path) {
+        config_path = ".config";
+    }
+    
     printf("[WRAPPER] Using Kconfig path: %s\n", kconfig_path);
+    printf("[WRAPPER] Mode: %s\n", development_mode ? "Development" : "Production");
 
-    // Verify Kconfig file exists
-    struct stat sb;
-    if (stat(kconfig_path, &sb) != 0) {
-        int err = errno;
-        fprintf(stderr, "[WRAPPER ERROR] Kconfig not found: %s (errno=%d)\n", 
-                kconfig_path, err);
-        perror("stat failed");
-        return 1;
-    }
-
-    // --- Start Frontend Development Server ---
     const char *wconf_app_dir = "scripts/kconfig/wconf-app";
     
-    frontend_pid = fork();
-    if (frontend_pid == -1) {
-        perror("[WRAPPER ERROR] Failed to fork frontend process");
-        return 1;
-    }
+    if (development_mode) {
+        // --- Development Mode: Start Vite Dev Server ---
+        frontend_pid = fork();
+        if (frontend_pid == -1) {
+            perror("[WRAPPER ERROR] Failed to fork frontend process");
+            return 1;
+        }
 
-    if (frontend_pid == 0) {
-        // Child process: Start the frontend server
-        printf("[WRAPPER] Changing directory to %s\n", wconf_app_dir);
-        if (chdir(wconf_app_dir) != 0) {
-            perror("[WRAPPER ERROR] Failed to change directory to wconf-app");
+        if (frontend_pid == 0) {
+            // Child process: Start the frontend dev server
+            printf("[WRAPPER] Starting development server in %s\n", wconf_app_dir);
+            if (chdir(wconf_app_dir) != 0) {
+                perror("[WRAPPER ERROR] Failed to change directory to wconf-app");
+                exit(1);
+            }
+            
+            printf("[WRAPPER] Executing 'npm run dev'...\n");
+            execlp("npm", "npm", "run", "dev", NULL);
+            
+            // If execlp returns, it failed
+            perror("[WRAPPER ERROR] Failed to execute 'npm run dev'");
             exit(1);
         }
         
-        printf("[WRAPPER] Executing 'npm run dev'...\n");
-        execlp("npm", "npm", "run", "dev", NULL);
+        // Parent process: Wait a moment for the server to start
+        printf("[WRAPPER] Waiting for development server to start...\n");
+        sleep(5); // Adjust as needed
+    } else {
+        // --- Production Mode: Use Pre-built Frontend ---
+        printf("[WRAPPER] Using pre-built frontend assets\n");
         
-        // If execlp returns, it failed
-        perror("[WRAPPER ERROR] Failed to execute 'npm run dev'");
-        exit(1);
+        // Verify dist directory exists
+        char dist_path[PATH_MAX];
+        snprintf(dist_path, sizeof(dist_path), "%s/dist", wconf_app_dir);
+        
+        struct stat sb;
+        if (stat(dist_path, &sb) != 0 || !S_ISDIR(sb.st_mode)) {
+            fprintf(stderr, "[WRAPPER ERROR] Pre-built frontend assets not found in %s\n", dist_path);
+            fprintf(stderr, "[WRAPPER ERROR] Please run 'make assets' in %s to build the frontend assets\n", wconf_app_dir);
+            return 1;
+        }
     }
-
-    // Parent process: Wait a moment for the server to start
-    printf("[WRAPPER] Waiting for frontend server to start...\n");
-    sleep(5); // Adjust as needed
 
     // --- Execute Tauri Backend ---
     printf("[WRAPPER] Starting backend process...\n");
@@ -159,15 +190,44 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    // Get absolute path to Kconfig
-    char kconfig_abs_path[4096];
-    if (realpath(kconfig_path, kconfig_abs_path) == NULL) {
-        perror("[WRAPPER ERROR] Failed to get absolute path to Kconfig");
-        free((void*)rust_binary);
-        return 1;
+    // Get absolute paths to the .config file
+    char config_abs_path[4096];
+    
+    // First check if a .config file was explicitly provided
+    const char *config_file_path = getenv("KCONFIG_CONFIG");
+    if (!config_file_path) {
+        // Default to .config in the current directory
+        config_file_path = ".config";
     }
     
-    printf("[WRAPPER] Using Kconfig: %s\n", kconfig_abs_path);
+    // Get absolute path to the config file
+    if (realpath(config_path, config_abs_path) == NULL) {
+        // If .config doesn't exist, create an empty one
+        if (errno == ENOENT) {
+            printf("[WRAPPER] No .config file found, creating an empty one\n");
+            FILE *f = fopen(config_file_path, "w");
+            if (f) fclose(f);
+            if (realpath(config_file_path, config_abs_path) == NULL) {
+                perror("[WRAPPER ERROR] Failed to create .config file");
+                free((void*)rust_binary);
+                return 1;
+            }
+        } else {
+            perror("[WRAPPER ERROR] Failed to get absolute path to .config");
+            free((void*)rust_binary);
+            return 1;
+        }
+    }
+    
+    // Get the directory containing the .config file
+    char config_dir[4096];
+    strncpy(config_dir, config_abs_path, sizeof(config_dir));
+    char *last_slash = strrchr(config_dir, '/');
+    if (last_slash) {
+        *last_slash = '\0';  // Truncate at the last slash
+    }
+    
+    printf("[WRAPPER] Using config file: %s\n", config_abs_path);
     
     // Set up logging for the backend
     char log_path[4096];
@@ -180,6 +240,7 @@ int main(int argc, char *argv[]) {
     // Set environment variables for the backend
     setenv("RUST_LOG", "debug,wconf=trace,tao=debug,winit=debug,tauri=debug", 1);
     setenv("RUST_BACKTRACE", "1", 1);
+    setenv("KCONFIG_CONFIG", config_abs_path, 1);  // Pass config path to backend
     
     // Create pipes for capturing output
     int stdout_pipe[2];
@@ -215,12 +276,16 @@ int main(int argc, char *argv[]) {
         close(stdout_pipe[1]);
         close(stderr_pipe[1]);
         
-        // Execute the backend
+        // Execute the backend with the .config file
         printf("[BACKEND] Starting backend: %s\n", rust_binary);
-        printf("[BACKEND] Kconfig path: %s\n", kconfig_abs_path);
+        printf("[BACKEND] Config file: %s\n", config_abs_path);
         fflush(stdout);
         
-        char *backend_argv[] = {(char*)rust_binary, kconfig_abs_path, NULL};
+        // Set KCONFIG_CONFIG environment variable for the backend
+        setenv("KCONFIG_CONFIG", config_abs_path, 1);
+        
+        // Pass the config file path as an argument
+        char *backend_argv[] = {(char*)rust_binary, config_abs_path, NULL};
         execv(rust_binary, backend_argv);
         
         // If we get here, execv failed
@@ -246,8 +311,8 @@ int main(int argc, char *argv[]) {
         }
         
         // Log header
-        fprintf(log_file, "\n=== Starting backend at %s with Kconfig: %s ===\n\n", 
-                rust_binary, kconfig_abs_path);
+        fprintf(log_file, "\n=== Starting backend at %s with config: %s ===\n\n", 
+                rust_binary, config_abs_path);
         fflush(log_file);
         
         // Set pipes to non-blocking

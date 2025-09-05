@@ -1,66 +1,96 @@
 import { defineConfig } from 'vite';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Vite configuration for Tauri
 // https://vitejs.dev/config/
-
-export default defineConfig({
-  // Prevent vite from obscuring Rust errors
-  clearScreen: false,
+// 'mode' must be explicitly set via --mode flag in npm scripts
+// or defaults to 'production' in Vite
+// WCONFIG_DEBUG=1 will force development mode
+export default defineConfig(({ mode }) => {
+  // Development mode is enabled when:
+  // 1. Explicitly set via --mode development, or
+  // 2. WCONFIG_DEBUG is set to '1'
+  const isDev = mode === 'development' || process.env.WCONFIG_DEBUG === '1';
   
-  // Tauri expects a fixed port, fail if that port is not available
-  server: {
-    port: 5173,
-    strictPort: true,
-    open: false, // Don't open browser automatically
-    fs: {
-      // Allow serving files from one level up from the package root
-      allow: ['..', '../../..'],
-    },
-  },
-  
-  // Environment variables
-  envPrefix: ['VITE_', 'TAURI_'],
-  
-  // Build configuration
-  build: {
-    target: process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
-    sourcemap: !!process.env.TAURI_DEBUG,
-    outDir: 'dist',
-    emptyOutDir: true,
-    rollupOptions: {
-      input: {
-        main: resolve(__dirname, 'index.html')
-      },
-      output: {
-        entryFileNames: 'assets/[name]-[hash].js',
-        chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash][extname]'
+  return {
+    // Set the base path for production builds
+    base: isDev ? '/' : './',
+    
+    // Prevent Vite from obscuring Rust errors
+    clearScreen: false,
+    
+    // Development server configuration
+    server: {
+      port: 5173, // Standard Vite dev server port
+      strictPort: true,
+      fs: {
+        // Allow serving files from one level up from the package root
+        allow: ['..']
       }
-    }
-  },
-  
-  // Public directory for static assets
-  publicDir: 'public',
-  
-  // Resolve aliases
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, './src'),
-      '@tauri-apps/api': '@tauri-apps/api/dist/tauri',
     },
-  },
-  
-  // Base public path
-  base: '/',
-  
-  // Optimize deps for better performance
-  optimizeDeps: {
-    // Add any dependencies that should be pre-bundled
-    include: ['@tauri-apps/api']
-  }
+    
+    // Environment variables
+    envPrefix: ['VITE_', 'WCONFIG_'],
+    
+    build: {
+      // Minify in production only
+      minify: isDev ? false : 'esbuild',
+      
+      // Generate sourcemaps in development
+      sourcemap: isDev,
+      
+      // Output directory
+      outDir: 'dist',
+      
+      // Clean the output directory before building in production
+      emptyOutDir: !isDev,
+      
+      // Ensure assets are copied to the correct location
+      assetsInlineLimit: 0,
+      
+      // Assets directory (relative to outDir)
+      assetsDir: 'assets',
+      
+      // Rollup options
+      rollupOptions: {
+        // Main entry point
+        input: resolve(__dirname, 'index.html'),
+        output: {
+          entryFileNames: 'assets/[name]-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: (assetInfo) => {
+            // Handle different asset types
+            const info = assetInfo.name.split('.');
+            const ext = info[info.length - 1];
+            if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
+              return 'assets/images/[name]-[hash][extname]';
+            }
+            if (ext === 'css') {
+              return 'assets/css/[name]-[hash][extname]';
+            }
+            return 'assets/[name]-[hash][extname]';
+          },
+        },
+        // External dependencies
+        external: [
+          '@tauri-apps/api/tauri',
+          '@tauri-apps/api/event',
+          '@tauri-apps/api/window'
+        ]
+      },
+    },
+    
+    // Dependencies optimization
+    optimizeDeps: {
+      // Exclude Tauri dependencies
+      exclude: ['@tauri-apps/api'],
+      // Enable esbuild optimizations for development
+      esbuildOptions: {
+        // Support for top-level await
+        target: 'esnext',
+        supported: { 
+          bigint: true,
+        },
+      },
+    },
+  };
 });

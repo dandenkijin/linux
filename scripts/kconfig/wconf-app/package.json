@@ -2,13 +2,18 @@
     "name": "wconf-frontend",
     "version": "0.1.0",
     "description": "Frontend for the Tauri-based kernel configuration tool",
+    "private": true,
     "scripts": {
-        "dev": "vite --force",
-        "build": "vite build",
-        "preview": "vite preview"
+        "dev": "vite",
+        "prebuild": "node scripts/copy-files.js",
+        "build": "vite build --emptyOutDir",
+        "preview": "vite preview",
+        "build:prod": "vite build --mode production"
+    },
+    "dependencies": {
+        "@tauri-apps/api": "^2.8.0"
     },
     "devDependencies": {
-        "@tauri-apps/api": "^2.8.0",
         "@tauri-apps/cli": "^2.8.0",
         "vite": "^4.0.0"
     }
