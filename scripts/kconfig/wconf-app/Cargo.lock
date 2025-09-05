@@ -4587,6 +4587,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-utils",
  "tempfile",
  "thiserror 1.0.69",
  "webbrowser",

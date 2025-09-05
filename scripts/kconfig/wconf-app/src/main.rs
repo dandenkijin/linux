@@ -7,7 +7,7 @@ mod kconfig_parser {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::{Path};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum KconfigNode {
@@ -248,29 +248,35 @@ mod kconfig_parser {
     } // Close the KconfigParser impl
 } // Close the kconfig_parser module
 
-use crate::kconfig_parser::{KconfigNode, KconfigOption, KconfigParser};
 use serde::Serialize;
 use tauri_plugin_dialog::DialogExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use tauri::{
-    AppHandle, Manager, Runtime, 
-    menu::{Menu, MenuItem, MenuItemBuilder, SubmenuBuilder, MenuBuilder}
+    Manager, 
+    Runtime,
+    WebviewWindowBuilder,
+    WebviewUrl,
+    AppHandle,
+    menu::{Menu, MenuItemBuilder, SubmenuBuilder, MenuBuilder}
 };
 
-// Global flag to track if we already have a window
+// Using the kconfig_parser module defined at the top of the file
+use kconfig_parser::{KconfigNode, KconfigOption};
+
+// Global flag to track if the main window is open
 static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 
 struct KconfigState {
     config_path: PathBuf,
-    parser: KconfigParser,
+    parser: kconfig_parser::KconfigParser,
 }
 
 impl KconfigState {
     fn new(config_path: String) -> Self {
         Self {
             config_path: PathBuf::from(config_path),
-            parser: KconfigParser::new(),
+            parser: kconfig_parser::KconfigParser::new(),
         }
     }
 }
@@ -555,233 +561,107 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
         }
 }
 
-use tauri::utils::config::{Config, WindowConfig};
-use std::path::PathBuf;
+// Removed unused import
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-        // Set up logging
-        unsafe {
-            std::env::set_var("RUST_LOG", "debug,wconf=trace,tao=debug,winit=debug,tauri=debug");
-        }
-        
-        env_logger::builder()
-            .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
-            .format_module_path(false)
-            .filter_level(log::LevelFilter::Trace)
-            .init();
+    // Set up logging
+    unsafe {
+        std::env::set_var("RUST_LOG", "debug,wconf=trace,tao=debug,winit=debug,tauri=debug");
+    }
+    
+    env_logger::builder()
+        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
+        .format_module_path(false)
+        .filter_level(log::LevelFilter::Trace)
+        .init();
 
-        log::info!("========================================");
-        log::info!("Starting wconf application...");
-        log::debug!("Current working directory: {:?}", std::env::current_dir()?);
-        log::debug!("Command line args: {:?}", std::env::args().collect::<Vec<_>>());
-        log::debug!("Environment variables (first 10):");
-        for (i, (key, value)) in std::env::vars().take(10).enumerate() {
-            log::debug!("  {}: {}={}", i + 1, key, value);
-        }
-        
-        // Get config file path from environment or use default .config
-        let config_path = std::env::var("KCONFIG_CONFIG")
-            .unwrap_or_else(|_| ".config".to_string());
-        
-        println!("[WRAPPER] Using config file: {}", config_path);
-        
-        let state = Arc::new(Mutex::new(KconfigState::new(config_path)));
-        
-        log::debug!("Creating Tauri application builder...");
-        
-        log::info!("Setting up Tauri application...");
-        log::debug!("Tauri version: {}", env!("CARGO_PKG_VERSION"));
-        log::debug!("Tauri features: {:?}", {
-            #[allow(unused_mut)]
-            // List of enabled features for logging
-            let features = vec![
-                "custom-protocol" // Default Tauri feature
-            ];
-            features
-        });
-        
-        tauri::Builder::default()
-            .setup(move |app| {
-                // Create and set the application menu
-                let menu = create_menu(app.handle())?;
-                app.set_menu(menu)?;
-                
-                // Handle menu events
-                let app_handle = app.handle().clone();
-                app.on_menu_event(move |_app, event| {
-                    handle_menu_event(&app_handle, event);
-                });
-                
-                log::info!("Tauri app setup started");
-                log::debug!("Current working directory: {:?}", std::env::current_dir()?);
-                let path_resolver = app.path();
-                log::debug!("App config dir: {:?}", path_resolver.app_config_dir());
-                log::debug!("App data dir: {:?}", path_resolver.app_data_dir());
-                
-                // Use a fixed window label to prevent multiple windows
-                const WINDOW_LABEL: &str = "main";
-                
-                // Check if we already have a window open
-                if WINDOW_OPEN.swap(true, Ordering::SeqCst) {
-                    log::warn!("Window already exists, not creating a new one");
-                    // Try to focus the existing window instead
-                    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-                        if let Err(e) = window.set_focus() {
-                            log::error!("Failed to focus existing window: {}", e);
-                        }
-                    }
-                    return Ok(());
+    log::info!("========================================");
+    log::info!("Starting wconf application...");
+    log::debug!("Current working directory: {:?}", std::env::current_dir()?);
+    log::debug!("Command line args: {:?}", std::env::args().collect::<Vec<_>>());
+    
+    // Get kernel config file path from environment or use default .config
+    let kernel_config_path = std::env::var("KCONFIG_CONFIG")
+        .unwrap_or_else(|_| ".config".to_string());
+    
+    println!("[WRAPPER] Using kernel config file: {}", kernel_config_path);
+    
+    let state = Arc::new(Mutex::new(KconfigState::new(kernel_config_path)));
+    let state_for_manage = state.clone();
+    
+    log::info!("Setting up Tauri application...");
+    
+    tauri::Builder::default()
+        .setup(move |app| {
+            // Create and set the application menu
+            let menu = create_menu(app.handle())?;
+            app.set_menu(menu)?;
+            
+            // Handle menu events
+            let app_handle = app.handle().clone();
+            app.on_menu_event(move |_app, event| {
+                handle_menu_event(&app_handle, event);
+            });
+            
+            log::info!("Tauri app setup started");
+            
+            // Check if window is already open
+            if WINDOW_OPEN.swap(true, Ordering::SeqCst) {
+                log::info!("Window already exists, bringing to front");
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_focus();
                 }
-
-                // Clean up any existing windows to be safe
-                let webview_windows = app.webview_windows();
-                if !webview_windows.is_empty() {
-                    log::info!("Found {} existing windows, closing them...", webview_windows.len());
-                    for (label, window) in webview_windows {
-                        if label != WINDOW_LABEL {  // Don't close our main window if it exists
-                            log::debug!("Closing window: {}", label);
-                            if let Err(e) = window.close() {
-                                log::error!("Failed to close window '{}': {}", label, e);
-                            }
-                        }
-                    }
-                    // Give the system time to clean up the windows
+                return Ok(());
+            }
+            
+            log::info!("Creating main window");
+            
+            // Create new window
+            let window = WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::App("index.html".into())
+            )
+            .title("Kernel Configuration")
+            .inner_size(1024.0, 768.0)
+            .min_inner_size(800.0, 600.0)
+            .center()
+            .build()?;
+            
+            // Set up window close handler
+            let window_handle = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    log::info!("Window close requested");
+                    WINDOW_OPEN.store(false, Ordering::SeqCst);
+                    // Give some time for the window to close
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-
-                // Create new main window with error handling
-                log::info!("Creating new main window...");
-                
-                // First check if the window already exists
-                if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-                    log::info!("Window already exists, bringing it to front");
-                    if let Err(e) = window.set_focus() {
-                        log::error!("Failed to focus existing window: {}", e);
-                    }
-                } else {
-                    // Only create a new window if one doesn't exist
-                    // Load Tauri configuration
-                    let config_path = std::env::current_exe()?
-                        .parent()
-                        .map(|p| p.join("tauri.conf.json"))
-                        .unwrap_or_else(|| PathBuf::from("tauri.conf.json"));
-                    
-                    // Default window configuration
-                    let mut window_config = WindowConfig {
-                        width: Some(800),
-                        height: Some(600),
-                        resizable: Some(true),
-                        decorations: Some(true),
-                        center: Some(true),
-                        ..Default::default()
-                    };
-                    
-                    if config_path.exists() {
-                        match std::fs::read_to_string(&config_path) {
-                            Ok(config_str) => {
-                                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
-                                    if let Some(windows) = config.get("windows").and_then(|w| w.as_array()) {
-                                        if let Some(window) = windows.get(0) {
-                                            if let Some(title) = window.get("title").and_then(|t| t.as_str()) {
-                                                window_config.title = Some(title.to_string());
-                                            }
-                                            if let Some(width) = window.get("width").and_then(|w| w.as_i64()) {
-                                                window_config.width = Some(width as f64);
-                                            }
-                                            if let Some(height) = window.get("height").and_then(|h| h.as_i64()) {
-                                                window_config.height = Some(height as f64);
-                                            }
-                                            if let Some(resizable) = window.get("resizable").and_then(|r| r.as_bool()) {
-                                                window_config.resizable = Some(resizable);
-                                            }
-                                            if let Some(decorations) = window.get("decorations").and_then(|d| d.as_bool()) {
-                                                window_config.decorations = Some(decorations);
-                                            }
-                                            if let Some(center) = window.get("center").and_then(|c| c.as_bool()) {
-                                                window_config.center = Some(center);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    log::error!("Failed to parse tauri.conf.json");
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Failed to read tauri.conf.json: {}", e);
-                            }
-                        }
-                    } else {
-                        log::warn!("tauri.conf.json not found, using default configuration");
-                    }
-
-                    // Create window builder with configuration
-                    let mut builder = tauri::WebviewWindowBuilder::new(
-                        app,
-                        WINDOW_LABEL,
-                        tauri::WebviewUrl::App("index.html".into())
-                    )
-                    .title(window_config.title.as_deref().unwrap_or("Kernel Configuration"))
-                    .resizable(window_config.resizable.unwrap_or(true))
-                    .decorations(window_config.decorations.unwrap_or(true));
-                    
-                    // Apply window size
-                    if let (Some(width), Some(height)) = (window_config.width, window_config.height) {
-                        builder = builder.inner_size(width, height);
-                    }
-                    
-                    // Center window if specified
-                    if window_config.center.unwrap_or(true) {
-                        builder = builder.center();
-                    }
-                    
-                    let webview = match builder.build() {
-                        Ok(webview) => webview,
-                        Err(e) => {
-                            log::error!("Failed to create webview: {}", e);
-                            WINDOW_OPEN.store(false, Ordering::SeqCst);
-                            return Err(e.into());
-                        }
-                    };
-                    
-                    // Set up window close event
-                    let webview_ = webview.clone();
-                    webview.on_window_event(move |event| {
-                        if let tauri::WindowEvent::CloseRequested { .. } = event {
-                            log::info!("Window close requested, cleaning up...");
-                            // Reset the window open flag
-                            WINDOW_OPEN.store(false, Ordering::SeqCst);
-                            
-                            // Close the window
-                            if let Err(e) = webview_.close() {
-                                log::error!("Failed to close window: {}", e);
-                            }
-                            
-                            // Exit the application
-                            std::process::exit(0);
-                        }
-                    });
-                }
-                log::info!("Tauri app setup completed");
-                Ok(())
-            })
-            .manage(state)
-            .invoke_handler(tauri::generate_handler![
-                load_kconfig,
-                get_kconfig_option,
-                set_kconfig_option,
-                save_kconfig
-            ])
-            .run(tauri::generate_context!())
-            .map_err(|e| {
-                log::error!("Failed to run Tauri application: {}", e);
-                log::error!("Error details: {:?}", e);
-                e
-            })?;
+            });
             
-        log::info!("Tauri application has exited");
-        Ok(())
+            // Load the Kconfig state in a separate thread
+            let state_clone = state.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = state_clone.lock().unwrap().parser.parse_config_file("Kconfig") {
+                    log::error!("Failed to parse Kconfig: {}", e);
+                }
+            });
+            
+            Ok(())
+        })
+        .manage(state_for_manage)
+        .invoke_handler(tauri::generate_handler![
+            load_kconfig,
+            get_kconfig_option,
+            set_kconfig_option,
+            save_kconfig,
+        ])
+        .run(tauri::generate_context!())
+        .map_err(|e| {
+            log::error!("Failed to run Tauri application: {}", e);
+            e.into()
+        })
 }
-
 
 #[cfg(test)]
 mod tests {

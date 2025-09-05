@@ -230,7 +230,7 @@ HOSTCFLAGS_gconf.o = $(call read-file, $(obj)/gconf-cflags)
 $(obj)/gconf: | $(obj)/gconf-libs
 $(obj)/gconf.o: | $(obj)/gconf-cflags
 
-# wconf: The binary that handles both wconfig and wconfig-dev targets
+# wconf: The binary that handles wconfig
 hostprogs	+= wconf
 wconf-objs	:= wconf.o
 
