@@ -2,10 +2,11 @@
 // Tauri-based kernel configuration tool (wconf)
 // All-in-one main application entry point.
 
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+#![allow(unused_imports)]
+#![allow(unused_macros)]
+
+#[macro_use]
+extern crate log;
 
 // --- Merged kconfig.rs ---
 mod kconfig_parser {
@@ -13,8 +14,8 @@ mod kconfig_parser {
     use nom_kconfig::{attribute, parse_kconfig, Entry, Kconfig, KconfigFile, KconfigInput};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::fs;
-    use std::path::{Path, PathBuf};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum KconfigNode {
@@ -62,50 +63,136 @@ mod kconfig_parser {
     pub struct KconfigParser {
         tree: KconfigTree,
         options: HashMap<String, KconfigOption>,
+        pub config_values: Option<std::collections::HashMap<String, String>>,
     }
 
-    impl KconfigParser {
+impl KconfigParser {
+            // Load configuration from a file or direct content
+        // If content is provided, config_path is only used for error messages
+        // If no content is provided, config_path is used to read the file
+        pub fn load_config(&mut self, config_path: &std::path::Path, content: Option<&str>) -> std::io::Result<()> {
+            let content = match content {
+                Some(content) => content.to_string(),
+                None => {
+                    if !config_path.exists() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("Config file not found: {}", config_path.display())
+                        ));
+                    }
+                    std::fs::read_to_string(config_path)?
+                }
+            };
+            
+            let mut config_values = std::collections::HashMap::new();
+            
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                
+                // Handle both CONFIG_ prefixed and non-prefixed keys
+                if let Some(stripped) = line.strip_prefix("CONFIG_") {
+                    if let Some((key, value)) = stripped.split_once('=') {
+                        let clean_value = value.trim().trim_matches('"');
+                        config_values.insert(key.to_string(), clean_value.to_string());
+                        self.set_option_value(key, clean_value);
+                    }
+                } else if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim();
+                    let clean_value = value.trim().trim_matches('"');
+                    config_values.insert(key.to_string(), clean_value.to_string());
+                    self.set_option_value(key, clean_value);
+                } else if let Some(stripped) = line.strip_prefix("# CONFIG_") {
+                    if let Some((key, _)) = stripped.split_once(" is not set") {
+                        config_values.insert(key.to_string(), "n".to_string());
+                        self.set_option_value(key, "n");
+                    }
+                }
+            }
+            
+            self.config_values = Some(config_values);
+            Ok(())
+        }
         pub fn new() -> Self {
             KconfigParser {
                 tree: KconfigTree { nodes: Vec::new() },
                 options: HashMap::new(),
+                config_values: None,
             }
         }
 
         pub fn parse_file(&mut self, path: &str) -> Result<(), String> {
-            println!("[PARSER] Starting to parse file: {}", path);
-            let path_obj = Path::new(path);
+            info!("[PARSER] Starting to parse file: {}", path);
+            let path_obj = std::path::Path::new(path);
             let parent_dir = path_obj
                 .parent()
-                .unwrap_or_else(|| Path::new("."))
+                .unwrap_or_else(|| std::path::Path::new("."))
                 .to_path_buf();
+                
+            // Check if file exists and is readable
+            if !path_obj.exists() {
+                return Err(format!("Kconfig file does not exist: {}", path));
+            }
+            
+            let metadata = fs::metadata(path_obj)
+                .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+                
+            if metadata.len() == 0 {
+                return Err("Kconfig file is empty".to_string());
+            }
+            
+            debug!("[PARSER] Reading Kconfig file ({} bytes)...", metadata.len());
             let content = fs::read_to_string(path)
                 .map_err(|e| format!("Failed to read Kconfig file: {}", e))?;
-            println!("[PARSER] Read {} bytes from file.", content.len());
-
+                
+            if content.is_empty() {
+                return Err("Kconfig file is empty after reading".to_string());
+            }
+            
+            debug!("[PARSER] Successfully read Kconfig file");
+            
+            // Parse the Kconfig file
+            debug!("[PARSER] Creating Kconfig parser input...");
             let kconfig_file = KconfigFile::new(parent_dir, path_obj.to_path_buf());
             let parser_input = KconfigInput::new_extra(&content, kconfig_file);
-
-            println!("[PARSER] Invoking nom_kconfig::parse_kconfig...");
-            let (_, kconfig) =
-                parse_kconfig(parser_input).map_err(|e| format!("Parse error: {:?}", e))?;
-
-            println!(
-                "[PARSER] Parsed {} top-level entries.",
-                kconfig.entries.len()
-            );
+            
+            debug!("[PARSER] Parsing Kconfig content...");
+            let (_, kconfig) = parse_kconfig(parser_input)
+                .map_err(|e| format!("Failed to parse Kconfig: {:?}", e))?;
+            
+            info!("[PARSER] Successfully parsed Kconfig file");
+            
+            debug!("[PARSER] Converting Kconfig to nodes...");
+            // Convert the parsed Kconfig to our internal node structure
             let nodes = self.convert_kconfig_to_nodes(&kconfig);
-            self.options.clear();
+            
+            debug!("[PARSER] Populating options...");
+            // Populate the options map with the nodes
             self.populate_options(&nodes);
+            
+            // Now that we're done with the immutable borrow, store the nodes in the tree
             self.tree = KconfigTree { nodes };
-            println!(
-                "[PARSER] Finished processing. Tree has {} nodes.",
-                self.tree.nodes.len()
-            );
+            
+            info!("[PARSER] Successfully parsed and processed Kconfig file");
+            info!("[PARSER] Total nodes parsed: {}", self.tree.nodes.len());
+            
+            if !self.tree.nodes.is_empty() {
+                debug!("[PARSER] First node type: {:?}", std::any::type_name_of_val(&self.tree.nodes[0]));
+                if let KconfigNode::Config(config) = &self.tree.nodes[0] {
+                    debug!("[PARSER] First config node: name={}, type={}, value={:?}", 
+                        config.name, config.r#type, config.value);
+                }
+            } else {
+                warn!("[PARSER] No nodes were created from the Kconfig file!");
+            }
+
             Ok(())
         }
 
         // Static method for tests
+        #[allow(dead_code)]
         pub fn parse(content: &str) -> Result<KconfigTree, String> {
             let dummy_file = KconfigFile::new(PathBuf::from("."), PathBuf::from("dummy.kconfig"));
             let parser_input = KconfigInput::new_extra(content, dummy_file);
@@ -274,21 +361,6 @@ mod kconfig_parser {
             }
         }
 
-        pub fn load_config(&mut self, config_path: &Path) -> Result<(), std::io::Error> {
-            let content = fs::read_to_string(config_path)?;
-            for line in content.lines() {
-                if let Some(stripped) = line.strip_prefix("CONFIG_") {
-                    if let Some((key, value)) = stripped.split_once('=') {
-                        self.set_option_value(key, value.trim_matches('"'));
-                    }
-                } else if let Some(stripped) = line.strip_prefix("# CONFIG_") {
-                    if let Some((key, _)) = stripped.split_once(" is not set") {
-                        self.set_option_value(key, "n");
-                    }
-                }
-            }
-            Ok(())
-        }
 
         pub fn get_config_content(&self) -> String {
             let mut content = String::new();
@@ -315,20 +387,21 @@ mod kconfig_parser {
 
 use crate::kconfig_parser::{KconfigNode, KconfigOption, KconfigParser};
 use serde::Serialize;
-use tauri_plugin_dialog::DialogExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use tauri_plugin_dialog::DialogExt;
 use tauri::{
     AppHandle, Manager, Runtime, 
-    menu::{Menu, MenuItem, MenuItemBuilder, SubmenuBuilder, MenuBuilder}
+    menu::{Menu, MenuItemBuilder, SubmenuBuilder, MenuBuilder}
 };
 
-// Global flag to track if we already have a window
+// Global flag to track if the main window is open
 static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 
 struct KconfigState {
     parser: KconfigParser,
     config_path: Option<PathBuf>,
+    #[allow(dead_code)]
     kconfig_path: String,
 }
 
@@ -347,33 +420,136 @@ struct CommandError {
     message: String,
 }
 
-impl<T: std::fmt::Display> From<T> for CommandError {
-    fn from(err: T) -> Self {
-        CommandError {
-            message: err.to_string(),
-        }
+// Implement From for String and &str to avoid conflict with the standard library's blanket implementation
+impl From<&str> for CommandError {
+    fn from(err: &str) -> Self {
+        CommandError { message: err.to_string() }
     }
 }
+
+impl From<String> for CommandError {
+    fn from(err: String) -> Self {
+        CommandError { message: err }
+    }
+}
+
+// Implement From for common error types
+impl From<std::io::Error> for CommandError {
+    fn from(err: std::io::Error) -> Self {
+        CommandError { message: err.to_string() }
+    }
+}
+
+// Implement std::error::Error for CommandError
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CommandError {}
 
 #[tauri::command]
 fn load_kconfig(
     state: tauri::State<'_, Arc<Mutex<KconfigState>>>,
 ) -> Result<Vec<KconfigNode>, CommandError> {
-    let mut state_guard = state.lock().unwrap();
-    let kconfig_path = state_guard.kconfig_path.clone();
-    let config_path = std::path::PathBuf::from(".config");
+    println!("[BACKEND] load_kconfig command received");
+    let mut state_guard = state.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+    
+    let kconfig_path = std::env::args().nth(1).unwrap_or_else(|| "Kconfig".to_string());
+    let config_path = std::env::args().nth(2).unwrap_or_else(|| ".config".to_string());
+    
+    println!("[BACKEND] Current working directory: {:?}", std::env::current_dir().unwrap_or_default());
+    println!("[BACKEND] Using Kconfig path: {}", kconfig_path);
+    println!("[BACKEND] Using config path: {}", config_path);
 
+    // Create a new KconfigParser instance
     let mut parser = KconfigParser::new();
-    parser.parse_file(&kconfig_path)?;
-    if config_path.exists() {
-        if let Err(e) = parser.load_config(&config_path) {
-            eprintln!("Warning: Failed to load .config: {}", e);
+    println!("[BACKEND] Created new KconfigParser instance");
+
+    // Parse the Kconfig file
+    println!("[BACKEND] Starting to parse Kconfig file: {}", kconfig_path);
+    match parser.parse_file(&kconfig_path) {
+        Ok(_) => {
+            println!("[BACKEND] Successfully parsed Kconfig file");
+            let tree = parser.get_tree();
+            println!("[BACKEND] Parsed tree has {} top-level nodes", tree.len());
+            
+            if !tree.is_empty() {
+                if let Some(first_node) = tree.first() {
+                    println!("[BACKEND] First node type: {:?}", std::any::type_name_of_val(first_node));
+                    if let kconfig_parser::KconfigNode::Config(config) = first_node {
+                        println!("[BACKEND] First config node: name={}, type={}, value={}", 
+                               config.name, config.r#type, config.value);
+                    }
+                }
+            } else {
+                println!("[BACKEND] Kconfig tree is empty!");
+            }
+        }
+        Err(e) => {
+            let msg = format!("Failed to parse Kconfig file: {}", e);
+            eprintln!("[BACKEND] {}", msg);
+            return Err(CommandError { message: msg });
         }
     }
 
-    let tree = parser.get_tree();
+    // Load the .config file if it exists
+    let config_path = std::path::Path::new(&config_path);
+    println!("[BACKEND] Checking for .config file at: {:?}", config_path);
+    if config_path.exists() {
+        println!("[BACKEND] Loading .config file");
+        if let Err(e) = parser.load_config(config_path, None) {
+            eprintln!("[BACKEND] Warning: Failed to load .config file: {}", e);
+        } else {
+            println!("[BACKEND] Successfully loaded .config file");
+            if let Some(config_values) = &parser.config_values {
+                println!("[BACKEND] Loaded {} config values", config_values.len());
+                if !config_values.is_empty() {
+                    let first_key = config_values.keys().next().unwrap();
+                    println!("[BACKEND] First config value: {} = {}", 
+                           first_key, config_values.get(first_key).unwrap_or(&"".to_string()));
+                }
+            }
+        }
+    } else {
+        println!("[BACKEND] No .config file found at {:?}", config_path);
+    }
+
+    // Get the parsed tree with config values applied
+    let mut tree = parser.get_tree();
+    println!("[BACKEND] Final tree has {} top-level nodes", tree.len());
+    
+    // Apply any values from .config to the tree
+    if let Some(config_values) = &parser.config_values {
+        println!("[BACKEND] Applying {} config values to the tree", config_values.len());
+        let mut applied = 0;
+        for node in &mut tree {
+            if let kconfig_parser::KconfigNode::Config(config) = node {
+                if let Some(value) = config_values.get(&config.name) {
+                    config.value = value.clone();
+                    applied += 1;
+                }
+            }
+        }
+        println!("[BACKEND] Applied {} config values to the tree", applied);
+    }
+    
+    // Update the state
     state_guard.parser = parser;
-    state_guard.config_path = Some(config_path);
+    state_guard.config_path = Some(config_path.to_path_buf());
+    println!("[BACKEND] Successfully updated application state");
+
+    // Log some information about the tree being returned
+    println!("[BACKEND] Returning tree with {} top-level nodes", tree.len());
+    if !tree.is_empty() {
+        if let Some(first_node) = tree.first() {
+            if let kconfig_parser::KconfigNode::Config(config) = first_node {
+                println!("[BACKEND] First node in return value: name={}, type={}, value={}", 
+                       config.name, config.r#type, config.value);
+            }
+        }
+    }
 
     Ok(tree)
 }
@@ -447,7 +623,7 @@ fn create_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, Box<dyn std::e
         .id("cut")
         .accelerator("CmdOrCtrl+X")
         .build(app)?;
-    let copy = MenuItemBuilder::new("Copy")
+    let _copy = MenuItemBuilder::new("Copy")
         .id("copy")
         .accelerator("CmdOrCtrl+C")
         .build(app)?;
@@ -530,8 +706,8 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
     
     match event.id().as_ref() {
         "open" => {
-            let app_handle = app.clone();
-            let window = window.clone();
+            let _app_handle = app.clone();
+            let _window = window.clone();
             let dialog = app.dialog();
             dialog.file()
                 .add_filter("Kconfig", &["Kconfig"])
@@ -745,13 +921,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::kconfig_parser::KconfigParser;
-    use std::fs;
-    use std::path::Path;
 
     #[test]
     #[ignore = "This test is for debugging the main Kconfig parsing and is expected to fail until the parser is fixed."]
     fn test_parsing_main_kconfig_file() {
-        let kconfig_path = Path::new("../../../Kconfig");
+        let kconfig_path = std::path::Path::new("../../../Kconfig");
         let content = fs::read_to_string(kconfig_path).expect("Failed to read main Kconfig file");
 
         let mut found_last_good_line = false;

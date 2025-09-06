@@ -12,26 +12,77 @@ if (isTauri) {
   import('@tauri-apps/api/window').then(module => { appWindow = module.appWindow; });
 }
 
-// --- Global State ---
-let kconfigTree = [];
-let selectedOption = null;
+// --- State Management ---
+const state = {
+    kconfigTree: [],
+    selectedOption: null,
+    setSelectedOption: function(option) {
+        this.selectedOption = option;
+    }
+};
 
 // Initialize the application
 async function initializeApp() {
-  if (isTauri) {
-    try {
-      // Wait for the Tauri API to be ready
-      await appWindow.show();
-      console.log('Tauri app window is ready');
-    } catch (error) {
-      console.error('Error initializing Tauri:', error);
-    }
-  } else {
-    console.log('Running in web mode');
+  console.log('[INIT] Initializing application...');
+  
+  if (!isTauri) {
+    console.log('[INIT] Running in web environment');
+    showWebWarning();
+    return;
   }
   
-  // Rest of your app initialization code
-  // ...
+  try {
+    await initializeTauri();
+  } catch (error) {
+    handleInitializationError(error);
+  }
+}
+
+async function initializeTauri() {
+  console.log('[INIT] Running in Tauri environment');
+  
+  // Wait for the Tauri API to be ready
+  console.log('[INIT] Waiting for Tauri window to be ready...');
+  await appWindow.show();
+  console.log('[INIT] Tauri app window is ready');
+  
+  // Set up window event listeners
+  setupWindowListeners();
+  
+  // Log Tauri version info
+  const { version, tauriVersion } = await import('@tauri-apps/api/app');
+  console.log(`[INIT] App version: ${version}, Tauri version: ${tauriVersion}`);
+}
+
+function setupWindowListeners() {
+  appWindow.onCloseRequested(() => {
+    console.log('[WINDOW] Close requested');
+  });
+}
+
+function showWebWarning() {
+  const appRoot = document.getElementById('app');
+  if (!appRoot) return;
+  
+  appRoot.innerHTML += `
+    <div class="warning">
+      <p>Running in web mode with limited functionality. For full features, please use the Tauri app.</p>
+    </div>`;
+}
+
+function handleInitializationError(error) {
+  console.error('Error initializing Tauri:', error);
+  
+  const appRoot = document.getElementById('app');
+  if (!appRoot) return;
+  
+  appRoot.innerHTML = `
+    <div class="error">
+      <h2>Initialization Error</h2>
+      <p>${error.message || 'Failed to initialize application'}</p>
+      <p>Check the console for more details.</p>
+    </div>`;
+}
 
 // --- Main App Setup ---
 function setupUI() {
@@ -116,26 +167,212 @@ function applyFilters() {
 // --- Data Loading ---
 async function loadKconfigData(treeContainer, detailsContainer) {
   try {
+    console.log("[FRONTEND] Starting to load Kconfig data...");
     console.log("[FRONTEND] Calling invoke('load_kconfig')...");
-    // The backend now knows the Kconfig path from its own command-line arguments.
-    // We just need to tell it to start loading.
-    console.log("[FRONTEND] Calling invoke('load_kconfig')...");
-    kconfigTree = await invoke("load_kconfig");
-    console.log(
-      "[FRONTEND] invoke('load_kconfig') successful, received tree with length:",
-      kconfigTree.length,
-    );
-    console.log("[FRONTEND] invoke('load_kconfig') successful.");
+    
+    // Add loading indicator
+    treeContainer.innerHTML = '<div class="loading">Loading configuration, please wait...</div>';
+    
+    // Call the backend to load the Kconfig
+    const startTime = performance.now();
+    const kconfigTree = await invoke("load_kconfig");
+    const loadTime = (performance.now() - startTime).toFixed(2);
+    
+    console.log("[FRONTEND] Backend returned successfully");
+    console.log(`[FRONTEND] Received tree with ${kconfigTree ? kconfigTree.length : 0} top-level nodes`);
+    console.log(`[FRONTEND] Loaded in ${loadTime}ms`);
+    
+    if (!kconfigTree || kconfigTree.length === 0) {
+      console.warn("[FRONTEND] Received empty Kconfig tree");
+      treeContainer.innerHTML = '<div class="error">No configuration options found. The Kconfig file may be empty or invalid.</div>';
+      return;
+    }
+    
+    // Render the tree
+    console.log("[FRONTEND] Rendering configuration tree...");
     renderTree(kconfigTree, treeContainer);
-    detailsContainer.innerHTML =
-      "<p>Select a configuration option to see its details.</p>";
+    
+    // Show default message
+    detailsContainer.innerHTML = "<p>Select a configuration option to see its details.</p>";
+    
+    console.log("[FRONTEND] Kconfig data loaded and rendered successfully");
   } catch (error) {
     console.error("Failed to load Kconfig tree:", error);
-    detailsContainer.innerHTML = `
-            <h2>Error Loading Kconfig</h2>
-            <p>${error.message || error}</p>
-        `;
+    const errorMessage = error.message || String(error);
+    console.error("Error details:", error);
+    
+    // Show detailed error to user
+    treeContainer.innerHTML = `
+      <div class="error">
+        <h2>Error Loading Configuration</h2>
+        <p><strong>Error:</strong> ${errorMessage}</p>
+        <p>Please check the console for more details.</p>
+      </div>
+    `;
   }
+}
+
+// --- Helper Functions ---
+function renderConfigControl(config) {
+  const { type, value } = config;
+  
+  switch (type) {
+    case 'bool':
+    case 'tristate': {
+      const states = type === 'bool' ? ['n', 'y'] : ['n', 'm', 'y'];
+      let currentIndex = states.indexOf(value);
+      if (currentIndex === -1) currentIndex = 0;
+      
+      return `
+        <div class="toggle-control">
+          <button class="toggle-btn" data-next-value="${states[(currentIndex + 1) % states.length]}">
+            ${getValueDisplay(value, type)}
+          </button>
+        </div>
+      `;
+    }
+    
+    case 'string': {
+      return `
+        <input type="text" class="string-input" value="${value || ''}" 
+               data-original-value="${value || ''}" />
+      `;
+    }
+    
+    case 'int':
+    case 'hex': {
+      return `
+        <input type="${type === 'hex' ? 'text' : 'number'}" 
+               class="${type}-input" 
+               value="${value || '0'}" 
+               data-original-value="${value || '0'}" 
+               ${type === 'hex' ? 'pattern="0x?[0-9a-fA-F]+"' : 'min="0"'}
+        />
+      `;
+    }
+    
+    default: {
+      return `<span class="value-display">${value || ''}</span>`;
+    }
+  }
+}
+
+function getValueDisplay(value, type) {
+  if (type === 'bool') {
+    return value === 'y' ? 'Yes' : 'No';
+  }
+  if (type === 'tristate') {
+    return { 'y': 'Yes', 'm': 'Module', 'n': 'No' }[value] || value;
+  }
+  return value;
+}
+
+function showConfigDetails(config, container) {
+  if (!container) return;
+  
+  const { name, prompt, type, help, default: defaultValue, depends, select } = config;
+  
+  container.innerHTML = `
+    <div class="config-details">
+      <h2>${prompt || name}</h2>
+      ${name ? `<div class="detail-row"><strong>Name:</strong> <code>${name}</code></div>` : ''}
+      ${type ? `<div class="detail-row"><strong>Type:</strong> ${type}</div>` : ''}
+      
+      ${defaultValue ? `
+        <div class="detail-row">
+          <strong>Default:</strong> <code>${defaultValue}</code>
+        </div>
+      ` : ''}
+      
+      ${depends ? `
+        <div class="detail-row">
+          <strong>Depends on:</strong> <code>${depends}</code>
+        </div>
+      ` : ''}
+      
+      ${select ? `
+        <div class="detail-row">
+          <strong>Selects:</strong> <code>${select}</code>
+        </div>
+      ` : ''}
+      
+      ${help ? `
+        <div class="help-text">
+          <h3>Help Text</h3>
+          <p>${help.replace(/\n/g, '<br>')}</p>
+        </div>
+      ` : ''}
+      
+      <div class="actions">
+        <button class="btn btn-apply">Apply Changes</button>
+        <button class="btn btn-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  // Add event listeners for action buttons
+  container.querySelector('.btn-apply')?.addEventListener('click', () => {
+    saveConfigValue(name, getCurrentValue(config, container));
+  });
+  
+  container.querySelector('.btn-cancel')?.addEventListener('click', () => {
+    // Reset to original value
+    const input = container.querySelector('input, select, button[data-original-value]');
+    if (input) {
+      input.value = input.dataset.originalValue || '';
+    }
+  });
+}
+
+function getCurrentValue(config, container) {
+  const input = container?.querySelector('input, select, button[data-next-value]');
+  
+  if (!input) return config.value;
+  
+  if (input.dataset.nextValue) {
+    return input.dataset.nextValue;
+  }
+  
+  return input.value;
+}
+
+async function saveConfigValue(name, value) {
+  try {
+    const success = await invoke('set_kconfig_option', { name, value });
+    if (success) {
+      // Update UI to reflect the new value
+      const item = document.querySelector(`[data-name="${name}"]`);
+      if (item) {
+        const valueDisplay = item.querySelector('.value-display, .toggle-btn');
+        if (valueDisplay) {
+          valueDisplay.textContent = getValueDisplay(value, item.dataset.type);
+          valueDisplay.dataset.nextValue = value;
+        }
+      }
+      showNotification('Configuration saved successfully', 'success');
+    } else {
+      showNotification('Failed to save configuration', 'error');
+    }
+  } catch (error) {
+    console.error('Error saving configuration:', error);
+    showNotification(`Error: ${error.message || 'Unknown error'}`, 'error');
+  }
+}
+
+function showNotification(message, type = 'info') {
+  const notification = document.createElement('div');
+  notification.className = `notification ${type}`;
+  notification.textContent = message;
+  
+  document.body.appendChild(notification);
+  
+  setTimeout(() => {
+    notification.classList.add('show');
+    setTimeout(() => {
+      notification.classList.remove('show');
+      setTimeout(() => notification.remove(), 300);
+    }, 3000);
+  }, 100);
 }
 
 // --- Tree Rendering Logic ---
@@ -166,55 +403,102 @@ function createNodeElement(node) {
   const data = node[nodeType];
   const children = data.children || [];
   const isExpandable = children.length > 0;
+  const isExpanded = false;
 
   let content = "";
   switch (nodeType) {
     case "Config":
       li.dataset.name = data.name;
-      content = `<span class="config-prompt">${data.prompt}</span> <span class="config-value">(${data.value})</span>`;
+      li.dataset.type = data.type || "unknown";
+      
+      // Create a more detailed config item
+      content = `
+        <div class="config-item">
+          <span class="config-prompt">${data.prompt || data.name}</span>
+          <div class="config-controls">
+            ${renderConfigControl(data)}
+          </div>
+        </div>
+      `;
+      
+      // Add click handler to show details
+      li.addEventListener('click', (e) => {
+        if (!e.target.closest('.config-controls')) {
+          showConfigDetails(data, document.getElementById('configDetails'));
+        }
+        e.stopPropagation();
+      });
       break;
+      
     case "Menu":
-      content = `<strong class="menu-title">${data.prompt}</strong>`;
+      content = `
+        <div class="menu-item">
+          <span class="menu-icon">📁</span>
+          <span class="menu-title">${data.prompt || 'Menu'}</span>
+        </div>
+      `;
       break;
+      
     case "Choice":
-      content = `<strong class="choice-title">Choice: ${data.prompt}</strong>`;
+      content = `
+        <div class="choice-item">
+          <span class="choice-icon">☑️</span>
+          <span class="choice-title">${data.prompt || 'Choice'}</span>
+        </div>
+      `;
       break;
+      
     case "Comment":
-      content = `<i class="comment-text">${data}</i>`;
+      content = `<div class="comment-item"># ${data}</div>`;
       break;
+      
     default:
       return null;
   }
 
   const nodeDiv = document.createElement("div");
-  nodeDiv.className = "tree-node";
-  nodeDiv.innerHTML = `<span class="toggle">${isExpandable ? "▶" : ""}</span> ${content}`;
-  li.appendChild(nodeDiv);
-
+  nodeDiv.className = `tree-node ${nodeType.toLowerCase()}-node`;
+  nodeDiv.innerHTML = `
+    <div class="node-header">
+      ${(() => {
+        if (!isExpandable) return '<span class="toggle"> </span>';
+        const icon = isExpanded ? '▼' : '▶';
+        return `<span class="toggle">${icon}</span>`;
+      })()}
+      ${content}
+    </div>
+  `;
+  
+  // Add expand/collapse toggle
   if (isExpandable) {
+    const toggle = nodeDiv.querySelector('.toggle');
     const childrenUl = document.createElement("ul");
-    childrenUl.className = "children collapsed";
+    childrenUl.className = `children ${isExpanded ? '' : 'collapsed'}`;
+    
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasExpanded = !childrenUl.classList.contains('collapsed');
+      childrenUl.classList.toggle('collapsed', wasExpanded);
+      toggle.textContent = wasExpanded ? '▶' : '▼';
+    });
+    
+    // Render children
     renderTree(children, childrenUl);
     li.appendChild(childrenUl);
   }
-
-  nodeDiv.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (isExpandable) {
-      const childrenUl = li.querySelector(".children");
-      childrenUl.classList.toggle("collapsed");
-      nodeDiv.querySelector(".toggle").textContent =
-        childrenUl.classList.contains("collapsed") ? "▶" : "▼";
-    }
-    if (nodeType === "Config") {
-      for (const n of document.querySelectorAll(".tree-node.selected")) {
-        n.classList.remove("selected");
+  
+  li.appendChild(nodeDiv);
+  
+  // Add click handler for config items
+  if (nodeType === "Config") {
+    nodeDiv.addEventListener("click", (e) => {
+      if (!e.target.closest('.config-controls')) {
+        showConfigDetails(data, document.getElementById('configDetails'));
       }
-      nodeDiv.classList.add("selected");
-      displayOptionDetails(data.name);
-    }
-  });
-
+      e.stopPropagation();
+    });
+  }
+  
   return li;
 }
 
@@ -268,27 +552,11 @@ function renderOptionDetails(option) {
   `;
 }
 
-async function displayOptionDetails(name) {
-  const detailsContainer = document.getElementById("configDetails");
-  try {
-    const option = await invoke("get_kconfig_option", { name });
-    if (!option) {
-      detailsContainer.innerHTML = `<p>Could not retrieve details for ${name}.</p>`;
-      return;
-    }
-    selectedOption = option;
-    detailsContainer.innerHTML = renderOptionDetails(option);
-    setupEventListeners(detailsContainer);
-  } catch (error) {
-    console.error(`Failed to get option ${name}:`, error);
-    detailsContainer.innerHTML = `<p>Error fetching details for ${name}: ${error.message || error}</p>`;
-  }
-}
 
 // --- Backend Communication ---
 async function handleValueChange(e) {
-  if (!selectedOption) return;
-  const { name } = selectedOption;
+  if (!state.selectedOption) return;
+  const { name } = state.selectedOption;
   const value = e.target.value;
 
   try {
@@ -298,7 +566,7 @@ async function handleValueChange(e) {
         `li[data-name="${name}"] .config-value`,
       );
       if (treeNodeValue) treeNodeValue.textContent = `(${value})`;
-      selectedOption.value = value; // Keep state in sync
+      state.setSelectedOption({ ...state.selectedOption, value });
     } else {
       console.warn(`Backend reported failure setting ${name}.`);
     }
@@ -371,5 +639,5 @@ document.addEventListener("DOMContentLoaded", () => {
   }).catch(error => {
     console.error('Failed to initialize app:', error);
   });
-});
-}
+})
+
