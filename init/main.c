@@ -1067,6 +1067,9 @@ void start_kernel(void)
 	vfs_caches_init_early();
 	sort_main_extable();
 	trap_init();
+#ifdef CONFIG_HEDGE_POOL
+	hedge_pool_reserve();
+#endif
 	mm_core_init();
 	maple_tree_init();
 	poking_init();
