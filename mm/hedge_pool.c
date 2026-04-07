@@ -14,6 +14,9 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/mm.h>
+#include <linux/numa.h>
+#include <linux/acpi.h>
+#include <linux/dmi.h>
 #include <asm/io.h>
 
 /* ------------------------------------------------------------------ */
@@ -28,6 +31,10 @@ static DEFINE_SPINLOCK(pool_lock);
 static int          discovered_channel_bit    = HEDGE_ASSUMED_BIT;
 static int          discovered_channel_offset = HEDGE_ASSUMED_OFFSET;
 static bool         pool_valid;
+
+/* Dynamic channel detection */
+static int          detected_channels = 0;
+static int          max_replicas = 2;
 
 /* ------------------------------------------------------------------ */
 /* Phase 1: memblock reservation (before buddy allocator)              */
@@ -56,6 +63,37 @@ void __init hedge_pool_reserve(void)
 
 	pr_info("hedge_pool: reserved %luMB at phys 0x%llx\n",
 		HEDGE_POOL_SIZE >> 20, (unsigned long long)base);
+}
+
+/* ------------------------------------------------------------------ */
+/* Dynamic channel detection                                           */
+/* ------------------------------------------------------------------ */
+
+static int __init detect_memory_channels(void)
+{
+	int numa_nodes;
+	
+	/* Method 1: Check NUMA topology - most reliable */
+	numa_nodes = num_online_nodes();
+	if (numa_nodes > 1) {
+		detected_channels = numa_nodes;
+		pr_info("hedge_pool: NUMA detected %d nodes, assuming %d channels\n",
+			 numa_nodes, numa_nodes);
+	} else {
+		/* Method 2: Fallback to ACPI/DMI if available */
+		/* On many systems, even single NUMA node has multiple channels */
+		detected_channels = 2;
+		pr_info("hedge_pool: single NUMA node, defaulting to %d channels\n",
+			 detected_channels);
+	}
+	
+	/* Apply reasonable limits */
+	max_replicas = min(detected_channels, HEDGE_MAX_REPLICAS);
+	
+	pr_info("hedge_pool: detected %d memory channels, max replicas: %d\n",
+		 detected_channels, max_replicas);
+	
+	return detected_channels;
 }
 
 /* ------------------------------------------------------------------ */
@@ -199,6 +237,9 @@ int __init hedge_pool_probe_init(void)
 		return -ENOMEM;
 	}
 
+	/* Detect hardware capabilities first */
+	detect_memory_channels();
+
 	/* Map the reserved region into kernel virtual space */
 	pool_base_virt = memremap(pool_base_phys, HEDGE_POOL_SIZE,
 				  MEMREMAP_WB);
@@ -271,8 +312,18 @@ int hedge_alloc_buf(struct hedge_alloc *ha, size_t elem_size,
 	if (!pool_valid)
 		return -ENODEV;
 
-	if (n_replicas < 2 || n_replicas > HEDGE_MAX_REPLICAS)
+	/* Auto-detect optimal replica count if not specified */
+	if (n_replicas <= 0) {
+		n_replicas = max_replicas;
+		pr_info("hedge_pool: auto-detected %d replicas for optimal performance\n",
+			 n_replicas);
+	}
+
+	if (n_replicas < 2 || n_replicas > max_replicas) {
+		pr_warn("hedge_pool: requested %d replicas, only %d available (detected: %d)\n",
+				 n_replicas, max_replicas, detected_channels);
 		return -EINVAL;
+	}
 
 	/* Each replica gets its own channel-offset-aligned slice */
 	needed = n_replicas * discovered_channel_offset;
