@@ -13,7 +13,7 @@ This kernel patch series implements a DRAM channel-hedged memory pool that:
 
 ## Patches Applied
 
-This repository contains three RFC-style patches:
+This repository implements three RFC-style patches:
 
 1. **[RFC 1/3]** `mm: add CONFIG_HEDGE_POOL and public API`
    - Adds `CONFIG_HEDGE_POOL` kernel configuration option
