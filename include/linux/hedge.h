@@ -5,8 +5,6 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 
-#ifdef CONFIG_HEDGE_POOL
-
 #define HEDGE_MAX_REPLICAS   4
 #define HEDGE_POOL_SIZE      (1UL << 26)   /* 64MB default reservation */
 #define HEDGE_ASSUMED_BIT    8
@@ -25,7 +23,10 @@ struct hedge_alloc {
 	size_t       logical_count;
 	int          channel_bit;
 	int          channel_offset;
+	int          elem_size_shift;
 };
+
+#ifdef CONFIG_HEDGE_POOL
 
 /* Called by init/main.c before mm_init() */
 void __init hedge_pool_reserve(void);

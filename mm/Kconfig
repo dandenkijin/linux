@@ -5,8 +5,7 @@ menu "Memory Management options"
 # DRAM channel-hedged memory pool
 config HEDGE_POOL
 	bool "DRAM channel-hedged memory pool (EXPERIMENTAL)"
-	depends on X86_64 || ARM64
-	depends on SMP
+	depends on X86
 	default n
 	help
 	  Reserves a physically contiguous memory region at boot,

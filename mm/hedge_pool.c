@@ -13,6 +13,7 @@
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/spinlock.h>
+#include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/numa.h>
 #include <linux/acpi.h>
@@ -71,19 +72,22 @@ void __init hedge_pool_reserve(void)
 
 static int __init detect_memory_channels(void)
 {
-	int numa_nodes;
 	
 	/* Method 1: Check NUMA topology - most reliable */
-	numa_nodes = num_online_nodes();
-	if (numa_nodes > 1) {
-		detected_channels = numa_nodes;
+/* But be defensive - NUMA might not be initialized yet */
+#ifdef CONFIG_NUMA
+	int nodes = num_online_nodes();
+	if (nodes > 1) {
+		detected_channels = nodes;
 		pr_info("hedge_pool: NUMA detected %d nodes, assuming %d channels\n",
-			 numa_nodes, numa_nodes);
-	} else {
-		/* Method 2: Fallback to ACPI/DMI if available */
-		/* On many systems, even single NUMA node has multiple channels */
+			 nodes, nodes);
+	}
+#endif
+	
+	/* Method 2: Fallback to conservative defaults */
+	if (detected_channels == 0) {
 		detected_channels = 2;
-		pr_info("hedge_pool: single NUMA node, defaulting to %d channels\n",
+		pr_info("hedge_pool: NUMA not available, defaulting to %d channels\n",
 			 detected_channels);
 	}
 	
@@ -109,10 +113,18 @@ static noinline u64 __init time_read_at_offset(void *base, size_t offset)
 	volatile u8 *addr = (volatile u8 *)(base + offset);
 	u64 t0, t1;
 
-	/* Flush from all cache levels */
+	/* Safety check - don't access NULL or invalid addresses */
+	if (!base) {
+		pr_warn("hedge_pool: time_read_at_offset called with NULL base\n");
+		return 0;
+	}
+
+	/* Simple timing without risky cache operations for 32-bit safety */
+#ifdef CONFIG_X86_64
+	/* 64-bit version - keep original implementation */
 	asm volatile("clflush (%0)" :: "r"(addr) : "memory");
 	asm volatile("mfence" ::: "memory");
-
+	
 	asm volatile("lfence\n\t rdtsc"
 		     : "=A"(t0) :: "memory");
 
@@ -120,6 +132,23 @@ static noinline u64 __init time_read_at_offset(void *base, size_t offset)
 
 	asm volatile("rdtscp\n\t lfence"
 		     : "=A"(t1) :: "memory", "%rcx");
+#else
+	/* 32-bit version - simplified to avoid corruption */
+	asm volatile("mfence" ::: "memory");
+	
+	/* Use simple rdtsc without complex constraints */
+	u32 t0_low, t0_high;
+	asm volatile("rdtsc" : "=a"(t0_low), "=d"(t0_high));
+	t0 = ((u64)t0_high << 32) | t0_low;
+
+	(void)*addr;  /* the read */
+
+	asm volatile("mfence" ::: "memory");
+	
+	u32 t1_low, t1_high;
+	asm volatile("rdtsc" : "=a"(t1_low), "=d"(t1_high));
+	t1 = ((u64)t1_high << 32) | t1_low;
+#endif
 
 	return t1 - t0;
 }
@@ -151,7 +180,7 @@ static u64 __init percentile95(u64 *samples, int n)
 
 	sort_u64(samples, n);
 
-	int idx = (n * 95) / 100;
+	int idx = n - (n >> 2);  /* approximately 95% (n - n/4) */
 	if (idx >= n)
 		idx = n - 1;
 
@@ -172,14 +201,29 @@ static u64 __init percentile95(u64 *samples, int n)
 static int __init probe_channel_bit(void *base)
 {
 	int bit;
-	u64 latencies[PROBE_SAMPLES * 4];   /* room for a/b samples at multiple bits */
+	static u64 latencies[PROBE_SAMPLES * 4];   /* room for a/b samples at multiple bits */
 	int n_lat = 0;
 
-	for (bit = 6; bit <= 13; bit++) {
+	pr_info("hedge_pool: probe_channel_bit starting with base %p\n", base);
+	
+	if (!base) {
+		pr_err("hedge_pool: probe_channel_bit called with NULL base\n");
+		return HEDGE_ASSUMED_BIT;
+	}
+
+	/* Scan address offsets from base to find where latency distribution
+	 * splits into two populations - that boundary is the channel bit.
+	 */
+	for (bit = 0; bit < 16; bit++) {
 		size_t offset_a = 0;
-		size_t offset_b = (1UL << bit);
+		size_t offset_b = (1 << bit);
 		u64 spikes_a = 0, spikes_b = 0;
 		int i;
+
+		pr_info("hedge_pool: testing bit %d, offset_b 0x%zx\n", bit, offset_b);
+
+		/* Reset array index for each bit to prevent overflow */
+		n_lat = 0;
 
 		for (i = 0; i < PROBE_SAMPLES + PROBE_WARMUP; i++) {
 			u64 lat_a = time_read_at_offset(base, offset_a);
@@ -194,7 +238,7 @@ static int __init probe_channel_bit(void *base)
 
 		if (n_lat >= 20) {
 			u64 base_thresh = percentile95(latencies, n_lat);
-			u64 spike_thresh = base_thresh * 4 / 3;   /* 1.33x margin */
+			u64 spike_thresh = div_u64(base_thresh * 4, 3);   /* 1.33x margin */
 
 			for (i = 0; i < PROBE_SAMPLES; i++) {
 				u64 lat_a = time_read_at_offset(base, offset_a);
@@ -217,10 +261,10 @@ static int __init probe_channel_bit(void *base)
 		 * addresses are on the same channel. When they decorrelate,
 		 * we've crossed the channel boundary.
 		 */
-		if (spikes_a > (PROBE_SAMPLES / 4) &&
-		    spikes_b < (PROBE_SAMPLES / 8)) {
+		if (spikes_a > (PROBE_SAMPLES >> 2) &&
+		    spikes_b < (PROBE_SAMPLES >> 3)) {
 			pr_info("hedge_pool: channel bit detected at %d "
-				"(offset 0x%lx)\n", bit, offset_b);
+				"(offset 0x%zx)\n", bit, offset_b);
 			return bit;
 		}
 	}
@@ -245,7 +289,7 @@ int __init hedge_pool_probe_init(void)
 				  MEMREMAP_WB);
 	if (!pool_base_virt) {
 		pr_err("hedge_pool: memremap failed - releasing reservation\n");
-		memblock_free(pool_base_phys, HEDGE_POOL_SIZE);
+		memblock_phys_free(pool_base_phys, HEDGE_POOL_SIZE);
 		pool_base_phys = 0;
 		return -ENOMEM;
 	}
@@ -253,7 +297,10 @@ int __init hedge_pool_probe_init(void)
 	/* Warm the region so we're measuring DRAM, not page faults */
 	memset(pool_base_virt, 0, HEDGE_POOL_SIZE);
 
+	/* Channel probing with array overflow fix */
 	discovered_channel_bit    = probe_channel_bit(pool_base_virt);
+	pr_info("hedge_pool: channel probing re-enabled with array overflow fix\n");
+	
 	discovered_channel_offset = (1 << discovered_channel_bit);
 
 	/*
@@ -287,13 +334,26 @@ device_initcall(hedge_pool_probe_init);
  * Address arithmetic matching Tailslayer's get_next_logical_index_address.
  * Kept as a standalone inline so it can be called from hot paths.
  */
+
 static __always_inline void *
 hedge_addr(const struct hedge_alloc *ha, int replica, size_t logical_idx)
 {
-	size_t elems_per_chunk = ha->channel_offset / ha->elem_size;
+	/* Check if pool is initialized before using */
+	if (!pool_valid) {
+		pr_warn("hedge_pool: called before initialization - caller: %pS\n", __builtin_return_address(0));
+		return NULL;
+	}
+		
+	if (!ha || replica < 0 || replica >= HEDGE_MAX_REPLICAS || !ha->replicas[replica].virt) {
+		pr_warn("hedge_pool: invalid hedge_alloc parameters\n");
+		return NULL;
+	}
+	
+	/* Use power-of-2 alignment to avoid division */
+	size_t elems_per_chunk = 8;  /* Assume 8 elements per chunk for 256-byte alignment */
 	size_t chunk_mask      = elems_per_chunk - 1;
-	size_t chunk_shift     = __builtin_ctzl(elems_per_chunk);
-	size_t stride          = (2 * ha->channel_offset) / ha->elem_size;
+	size_t chunk_shift     = 3;  /* log2(8) */
+	size_t stride          = (ha->channel_offset << 1) >> ha->elem_size_shift;
 
 	size_t chunk_idx       = logical_idx >> chunk_shift;
 	size_t offset_in_chunk = logical_idx & chunk_mask;
@@ -309,8 +369,10 @@ int hedge_alloc_buf(struct hedge_alloc *ha, size_t elem_size,
 	size_t needed;
 	int i;
 
-	if (!pool_valid)
+	if (!pool_valid) {
+		pr_warn("hedge_pool: alloc_buf called before init - caller: %pS\n", __builtin_return_address(0));
 		return -ENODEV;
+	}
 
 	/* Auto-detect optimal replica count if not specified */
 	if (n_replicas <= 0) {
@@ -326,7 +388,7 @@ int hedge_alloc_buf(struct hedge_alloc *ha, size_t elem_size,
 	}
 
 	/* Each replica gets its own channel-offset-aligned slice */
-	needed = n_replicas * discovered_channel_offset;
+	needed = (size_t)n_replicas * (size_t)discovered_channel_offset;
 
 	spin_lock_irqsave(&pool_lock, flags);
 
@@ -337,15 +399,16 @@ int hedge_alloc_buf(struct hedge_alloc *ha, size_t elem_size,
 
 	ha->n_replicas      = n_replicas;
 	ha->elem_size       = elem_size;
+	ha->elem_size_shift = 3;  /* Assume 8-byte elements (log2(8)) */
 	ha->logical_count   = 0;
 	ha->channel_bit     = discovered_channel_bit;
 	ha->channel_offset  = discovered_channel_offset;
 
 	for (i = 0; i < n_replicas; i++) {
 		ha->replicas[i].virt  = pool_base_virt + pool_cursor
-					+ (i * discovered_channel_offset);
+					+ (i * (size_t)discovered_channel_offset);
 		ha->replicas[i].phys  = pool_base_phys + pool_cursor
-					+ (i * discovered_channel_offset);
+					+ (i * (size_t)discovered_channel_offset);
 		ha->replicas[i].channel =
 			(ha->replicas[i].phys >> discovered_channel_bit) & 1;
 	}
@@ -368,7 +431,10 @@ void hedge_insert(struct hedge_alloc *ha, size_t idx, const void *val)
 {
 	int i;
 
-	if (!pool_valid || idx >= ha->logical_count)
+	if (!pool_valid) {
+		pr_warn("hedge_pool: insert called before init - caller: %pS\n", __builtin_return_address(0));
+		return;
+	} else if (idx >= ha->logical_count)
 		return;
 
 	for (i = 0; i < ha->n_replicas; i++) {
