@@ -17,6 +17,28 @@ config HEDGE_POOL
 
 	  If unsure, say N.
 
+config HEDGE_POOL_PREEMPTION
+	bool "Hedge pool preemption control"
+	depends on HEDGE_POOL
+	default y
+	help
+	  Enable preemption control mechanisms for hedge pool operations.
+	  This adds atomic variants of hedge pool functions for
+	  real-time critical sections and improves interrupt safety.
+
+	  If unsure, say Y.
+
+config HEDGE_POOL_RT_SUPPORT
+	bool "Hedge pool PREEMPT_RT support"
+	depends on HEDGE_POOL && PREEMPT_RT
+	default y
+	help
+	  Enable PREEMPT_RT-specific optimizations for hedge pool.
+	  Uses raw spinlocks and RT-safe synchronization primitives
+	  for real-time kernel configurations.
+
+	  If unsure, say Y.
+
 #
 # For some reason microblaze and nios2 hard code SWAP=n.  Hopefully we can
 # add proper SWAP support to them, in which case this can be remove.
